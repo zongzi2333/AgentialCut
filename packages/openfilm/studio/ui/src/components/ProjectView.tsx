@@ -94,6 +94,11 @@ import { SpendAsks } from './SpendAsks';
 import { ExportCenter } from './export/ExportCenter';
 import { PasteAttrsDialog } from './PasteAttrsDialog';
 import { ExportTray, type ExportTrayHandle } from './export/ExportTray';
+import { DeliverStage } from './workflow/DeliverStage';
+import { ProjectStage } from './workflow/ProjectStage';
+import { RoughCutStage } from './workflow/RoughCutStage';
+import { SoundStage } from './workflow/SoundStage';
+import { WorkflowBar, type WorkflowStage } from './workflow/WorkflowBar';
 import { FilmStageSelect, type FilmStageControl, type LayerGeometry, type StageClipEdit, type StagePick } from './FilmStageSelect';
 import { openSection } from './inspector-fields';
 import { FontScopeContext, type FontScope } from '@/lib/use-fonts';
@@ -594,6 +599,8 @@ export function ProjectView({ projectId, onProject, onLeave }: {
   }, [film.film, info, mediaFacts, pendingDrops, previewError]);
   const tracksRef = React.useRef(timelineTracks);
   tracksRef.current = timelineTracks;
+  /** The sound step's own count: the rows of the timeline that carry sound. */
+  const soundTrackCount = React.useMemo(() => timelineTracks.filter((track) => track.kind === 'audio').length, [timelineTracks]);
   /* the clips' links (`data-link`, by clip id): clips sharing one are edited together (lib/timeline-edit) */
   const clipLinks = React.useMemo(() => new Map((film.film?.tracks ?? []).flatMap((tr) => tr.clips.flatMap((c) => (
     c.attrs?.['data-link'] ? [[c.id, c.attrs['data-link']] as const] : []
@@ -690,6 +697,9 @@ export function ProjectView({ projectId, onProject, onLeave }: {
   /* open whenever the project opens (a reload too); closed, it stays closed until then or until a selection opens it */
   const [inspectorOpen, setInspectorOpen] = React.useState(true);
   const closeInspector = React.useCallback(() => setInspectorOpen(false), [setInspectorOpen]);
+  /* Where the workflow stands. Editing is where a project opens; the other steps are visits, not panes, so the editor
+     is unmounted while they are shown and comes back as it was (the film's state lives above it). */
+  const [workflowStage, setWorkflowStage] = React.useState<WorkflowStage>('edit');
   const [rowWidth, setRowWidth] = React.useState(0);
   const [colHeight, setColHeight] = React.useState(0);
   React.useEffect(() => {
@@ -701,7 +711,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     ro.observe(row);
     co.observe(col);
     return () => { ro.disconnect(); co.disconnect(); };
-  }, [loaded]);
+  }, [loaded, workflowStage]);
   /* the timeline fits its tracks (not taller than they need, up to 45% of the window) unless the person dragged it */
   const fitTimelineHeight = React.useRef<number>(TIMELINE_H);
   if (!pendingDrops.length) {
@@ -2660,42 +2670,29 @@ export function ProjectView({ projectId, onProject, onLeave }: {
   }
   if (!loaded) return <BrandLoadingScreen labelKey="projects.opening" />;
 
+  /* Moving through the workflow: leaving the editor stops the film rather than sounding on under another step. */
+  const goStage = (next: WorkflowStage) => {
+    if (next !== 'edit' && playing) toggle();
+    setWorkflowStage(next);
+  };
+
   const value = film.film;
   const viewerReady = Boolean(info);
   return (
     <div className="workspace-shell flex flex-col bg-[var(--dock-shell)]">
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" style={{ paddingLeft: DOCK_GAP, paddingRight: DOCK_GAP, paddingBottom: DOCK_GAP }}>
-        <div className="relative z-10 grid min-h-0 min-w-0 flex-1" style={{ gridTemplateColumns: 'minmax(0, 1fr)', gridTemplateRows: 'auto minmax(0, 1fr)', gridTemplateAreas: '"bar" "main"' }}>
-          {/* ── top bar: the title centered, whatever is on either side ── */}
+        <div className="relative z-10 grid min-h-0 min-w-0 flex-1" style={{ gridTemplateColumns: 'minmax(0, 1fr)', gridTemplateRows: 'auto auto minmax(0, 1fr)', gridTemplateAreas: '"bar" "flow" "main"' }}>
+          {/* ── top bar: the workflow in the middle, the project's own controls on either side ── */}
           <div data-titlebar className="relative flex h-8 min-w-0 items-center gap-1" style={{ gridArea: 'bar' }}>
-            {inTabs ? null : <div className="pointer-events-none absolute inset-0 flex min-w-0 items-center justify-center">
-              <div className="pointer-events-auto flex min-w-0 max-w-full items-center">
-                {renaming ? (
-                  <input
-                    autoFocus
-                    value={titleDraft}
-                    onChange={(e) => setTitleDraft(e.target.value)}
-                    onBlur={() => void commitTitle()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') void commitTitle();
-                      if (e.key === 'Escape') { setTitleDraft(title); setRenaming(false); }
-                    }}
-                    placeholder={t('project.untitled')}
-                    maxLength={TITLE_MAX_CHARS}
-                    style={titleEditWidth ? { width: titleEditWidth } : undefined}
-                    className="box-border h-[26px] max-w-full rounded-md bg-transparent px-2 text-[13px] font-medium text-[var(--text-muted)] outline-none"
-                  />
-                ) : (
-                  <Tooltip label={t('projectMenu.rename')} side="bottom">
-                    <button ref={titleBoxRef} type="button" onClick={startRename}
-                      className="flex h-[26px] w-fit min-w-0 max-w-[24ch] items-center rounded-md px-2 transition hover:bg-[var(--bg-hover)]">
-                      <span className="min-w-0 truncate text-[13px] font-medium text-[var(--text-muted)]">{clampTitle(title || t('project.untitled'))}</span>
-                    </button>
-                  </Tooltip>
-                )}
-              </div>
-            </div>}
             <div aria-hidden className="shrink-0 self-stretch" style={{ width: 'var(--titlebar-logo-x)' }} />
+            {/* first, so the workflow never has to make room for it */}
+            {!studioHost && <Tooltip label={t('desktop.title')} side="bottom">
+              <button type="button" aria-haspopup="dialog" onClick={() => setDesktopOpen(true)}
+                className={`flex h-[26px] shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-[var(--text-dim)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)] ${desktopOpen ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
+                <MonitorDown size={14} />
+                {t('nav.desktop')}
+              </button>
+            </Tooltip>}
             <div className="pointer-events-auto relative flex min-w-0 items-center gap-1">
               <Tooltip label={t('project.appMenu')} side="bottom">
                 <button type="button" aria-label={t('project.appMenu')} aria-haspopup="dialog"
@@ -2710,19 +2707,41 @@ export function ProjectView({ projectId, onProject, onLeave }: {
                   <GalleryVerticalEnd size={15} />
                 </button>
               </Tooltip>}
+              {/* the project's name, here rather than over the workflow: renaming stays one click away */}
+              {inTabs ? null : renaming ? (
+                <input
+                  autoFocus
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onBlur={() => void commitTitle()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void commitTitle();
+                    if (e.key === 'Escape') { setTitleDraft(title); setRenaming(false); }
+                  }}
+                  placeholder={t('project.untitled')}
+                  maxLength={TITLE_MAX_CHARS}
+                  style={titleEditWidth ? { width: Math.min(titleEditWidth, 180) } : undefined}
+                  className="box-border h-[26px] min-w-0 max-w-[18ch] rounded-md bg-transparent px-2 text-[12.5px] font-medium text-[var(--text-muted)] outline-none"
+                />
+              ) : (
+                <Tooltip label={t('projectMenu.rename')} side="bottom">
+                  <button ref={titleBoxRef} type="button" onClick={startRename}
+                    className="flex h-[26px] w-fit min-w-0 max-w-[18ch] items-center rounded-md px-2 transition hover:bg-[var(--bg-hover)]">
+                    <span className="min-w-0 truncate text-[12.5px] font-medium text-[var(--text-muted)]">{clampTitle(title || t('project.untitled'))}</span>
+                  </button>
+                </Tooltip>
+              )}
               <UpdateButton />
               <WebUpdateButton />
-              {!studioHost && <Tooltip label={t('desktop.title')} side="bottom">
-                <button type="button" aria-haspopup="dialog" onClick={() => setDesktopOpen(true)}
-                  className={`flex h-[26px] shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-[var(--text-dim)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)] ${desktopOpen ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
-                  <MonitorDown size={14} />
-                  {t('nav.desktop')}
-                </button>
-              </Tooltip>}
             </div>
             {inTabs ? (
               <TabStrip onRename={renameTab} onNew={() => setProjectsOpen(true)} onCoverFromFrame={coverFromFrame} maxLength={TITLE_MAX_CHARS} />
-            ) : <div className="min-w-0 flex-1" />}
+            ) : (
+              /* the six steps, in the order a film is made: the editor is one of them, not the whole window */
+              <div className="mx-2 flex min-w-0 flex-1 items-center justify-center overflow-hidden">
+                <WorkflowBar stage={workflowStage} onChange={goStage} />
+              </div>
+            )}
             <div ref={headerOpsRef} className="pointer-events-auto flex min-w-0 items-center justify-end gap-1">
               <ProjectLayoutMenu className={TOP_BTN}
                 /* an app that keeps the media in its own panel opens it there, from its own button: not a pane of Studio's */
@@ -2743,13 +2762,22 @@ export function ProjectView({ projectId, onProject, onLeave }: {
                 </button>
               </Tooltip>
               {/* in an app's tabs these are in the tab's menu */}
-              {inTabs ? null : <ProjectMenu className={TOP_BTN} onCoverFromFrame={coverFromFrame} onReveal={() => reveal('')} />}
+              {inTabs ? null : <ProjectMenu className={TOP_BTN} onRoughCut={() => setWorkflowStage('roughcut')} onCoverFromFrame={coverFromFrame} onReveal={() => reveal('')} />}
             </div>
             <div aria-hidden className="shrink-0 self-stretch" style={{ width: 'var(--titlebar-right-x)' }} />
           </div>
 
+          {/* the six steps, in the order a film is made: the editor is one of them, not the whole window */}
+          {inTabs ? (
+            <div style={{ gridArea: 'flow' }} className="pb-[6px]">
+              <WorkflowBar stage={workflowStage} onChange={goStage} />
+            </div>
+          ) : null}
+
           {/* the app's own panel (lib/host.ts `panel`) sits right of this, under the top bar: room left for it */}
           <section ref={dockColRef} className="relative flex min-h-0 min-w-0 flex-col" style={{ gridArea: 'main', ...(hostPanel?.open ? { marginRight: Math.max(0, hostPanel.width - DOCK_GAP) } : null) }}>
+            {workflowStage === 'edit' ? (
+              <>
             <div ref={viewerRowRef} className="relative flex min-h-0 min-w-0 flex-1 flex-row">
               {!hostAssets && assetsPaneOpen && assetsFit ? (
                 <>
@@ -3129,6 +3157,37 @@ export function ProjectView({ projectId, onProject, onLeave }: {
                 <div className="absolute inset-y-0 right-0"><AudioMeters levels={tools.levels} playing={playing} /></div>
               </div>
             ) : null}
+              </>
+            ) : workflowStage === 'media' ? (
+              /* the media library, the pane the editor keeps on the left grown to the whole step */
+              <div className={`${PANE} min-h-0 flex-1 bg-[var(--dock-pane)]`}>{mediaPool()}</div>
+            ) : workflowStage === 'roughcut' ? (
+              <RoughCutStage
+                totalMs={totalMs}
+                selectedCount={selectedBlocks.length}
+                subtitleCount={subs.count}
+                trackCount={timelineTracks.length}
+                onClose={() => setWorkflowStage('edit')}
+              />
+            ) : workflowStage === 'project' ? (
+              <ProjectStage
+                title={title}
+                folder={folder}
+                stage={stage}
+                fps={projectFps}
+                durationMs={totalMs}
+                tracks={filmSummary.tracks}
+                clips={filmSummary.clips}
+                captions={subs.count}
+                onReveal={() => reveal('')}
+                onMedia={() => setWorkflowStage('media')}
+                onExport={() => setExportOpen(true)}
+              />
+            ) : workflowStage === 'sound' ? (
+              <SoundStage durationMs={totalMs} tracks={soundTrackCount} onNext={() => setWorkflowStage('deliver')} />
+            ) : (
+              <DeliverStage durationMs={totalMs} onExport={() => setExportOpen(true)} />
+            )}
           </section>
         </div>
       </div>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckSquare, FolderInput, FolderOpen, FolderSearch, Image, ImageOff, ImagePlus, ListX, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { CheckSquare, FolderInput, FolderOpen, FolderSearch, Image, ImageOff, ImagePlus, ListX, MoreHorizontal, Pencil, Trash2, WandSparkles } from 'lucide-react';
 import { ContextMenu, type ContextMenuEntry } from './ContextMenu';
 import { Tooltip } from './Tooltip';
 import { useT } from '@/i18n';
@@ -26,6 +26,7 @@ export function ProjectMenu({
   onLocate,
   onRemove,
   onDelete,
+  onRoughCut,
   size = 18,
   className,
 }: {
@@ -49,6 +50,8 @@ export function ProjectMenu({
   /** Take it off the list (a project whose folder is gone: there is nothing to delete). */
   onRemove?: () => void;
   onDelete?: () => void;
+  /** Open the storyboard and rough cut, the project's AI step in the workflow; the editor's top bar passes it. */
+  onRoughCut?: () => void;
   size?: number;
   className?: string;
 }) {
@@ -68,6 +71,8 @@ export function ProjectMenu({
     if (run) entries.push({ id, icon, label, onSelect: run });
   };
   add('open', <FolderOpen size={15} />, t('projectMenu.open'), onOpen);
+  /* under Open: the workflow's AI step, before cutting by hand */
+  add('roughcut', <WandSparkles size={15} />, t('workflow.roughcut'), onRoughCut);
   add('rename', <Pencil size={15} />, t('projectMenu.rename'), onRename);
   add('select', <CheckSquare size={15} />, t('library.select'), onSelect);
   add('move', <FolderInput size={15} />, t('projects.moveToFolder'), onMoveToFolder);
