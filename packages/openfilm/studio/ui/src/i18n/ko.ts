@@ -1818,6 +1818,12 @@ export const ko: Words = {
         "copy-attrs": "속성 복사",
         "paste-attrs": "속성 붙여넣기",
         "refer": "채팅에 추가",
+        "stage-project": "프로젝트 단계로 이동",
+        "stage-media": "미디어 단계로 이동",
+        "stage-roughcut": "스토리보드 및 러프컷 단계로 이동",
+        "stage-edit": "편집 단계로 이동",
+        "stage-sound": "사운드 단계로 이동",
+        "stage-deliver": "전달 단계로 이동",
       },
     },
     providers: {

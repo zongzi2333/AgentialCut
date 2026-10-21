@@ -51,6 +51,9 @@ export function ProjectsView({
   onMoveFolder,
   onClose,
   heading,
+  currentId = '',
+  previewId = null,
+  onPreview,
 }: {
   projects: LibraryProject[];
   /** A project is being created or opened; "New project" does not take a second click meanwhile. */
@@ -90,6 +93,12 @@ export function ProjectsView({
   onClose?: () => void;
   /** The title row's left, in place of "Projects" (the launcher's switch between the projects and the examples). */
   heading?: React.ReactNode;
+  /** The project open in the editor: its card says "Current", and a click on it picks it rather than reloading it. */
+  currentId?: string;
+  /** The card picked for the page's left pane: outlined, not opened. */
+  previewId?: string | null;
+  /** A single click picks a project instead of opening it (the project page); a double-click, Enter or the menu opens. */
+  onPreview?: (project: LibraryProject) => void;
 }) {
   const t = useT();
   /* recently opened first: someone coming back to the list most likely wants the one they just had */
@@ -213,14 +222,25 @@ export function ProjectsView({
   }
 
   function itemProps(project: LibraryProject): ItemProps {
+    /* With a preview pane: one click picks the project (the pane shows it), a double-click, Enter or the menu opens it.
+       The project already open is only picked: opening it again would reload the page for nothing. */
+    const open = onPreview
+      ? (event?: { detail: number }) => {
+        if (event && event.detail === 1) { onPreview(project); return; }
+        if (project.id === currentId) { onPreview(project); return; }
+        onOpen(project);
+      }
+      : opening(() => onOpen(project));
     return {
       project,
       title: titleOf(project, t),
       selecting,
       selected: selectedIds.has(project.id),
+      current: project.id === currentId,
+      previewed: !selecting && project.id === previewId,
       renaming: renamingId === project.id,
       onToggleSelect: () => toggleSelected(project.id),
-      onOpen: opening(() => onOpen(project)),
+      onOpen: open,
       onStartRename: () => { if (!selecting) setRenamingId(project.id); },
       onCommitRename: (name: string) => {
         setRenamingId((current) => (current === project.id ? null : current));
@@ -233,6 +253,7 @@ export function ProjectsView({
       onMoveToFolder: () => setMoving({ project }),
       onLocate: () => onLocate(project),
       onDelete: () => onDelete([project.id]),
+      renameOnDoubleClick: Boolean(onPreview),
     };
   }
 
@@ -397,6 +418,10 @@ interface ItemProps {
   title: string;
   selecting: boolean;
   selected: boolean;
+  /** The project open in the editor. */
+  current: boolean;
+  /** Picked for the page's left pane, not opened. */
+  previewed: boolean;
   renaming: boolean;
   onToggleSelect: () => void;
   onOpen: (event?: { detail: number }) => void;
@@ -407,6 +432,8 @@ interface ItemProps {
   onMoveToFolder: () => void;
   onLocate: () => void;
   onDelete: () => void;
+  /** Double-clicking the name renames it (the project page); a single click only picks it. */
+  renameOnDoubleClick: boolean;
 }
 
 function SelectionCheck({ selected }: { selected: boolean }) {
@@ -459,6 +486,7 @@ function ProjectCardTitle({
   renaming,
   size,
   onOpen,
+  onRename,
   onCommit,
   onCancel,
 }: {
@@ -467,6 +495,8 @@ function ProjectCardTitle({
   renaming: boolean;
   size: 'card' | 'list';
   onOpen: (event?: { detail: number }) => void;
+  /** The project page: double-clicking the name renames it. */
+  onRename?: () => void;
   onCommit: (title: string) => void;
   onCancel: () => void;
 }) {
@@ -532,13 +562,18 @@ function ProjectCardTitle({
           }
         }}
         onClick={(event) => event.stopPropagation()}
-        className={`box-border w-full min-w-0 bg-transparent outline-none placeholder:text-[var(--text-faint)] ${textClass}`}
+        className={`box-border w-full min-w-0 rounded-md bg-[var(--surface-2)] px-1.5 outline-none ring-1 ring-inset ring-[var(--text)] ${textClass}`}
       />
     );
   }
 
   return (
-    <button type="button" onClick={onOpen} className="min-w-0 w-full text-left">
+    <button
+      type="button"
+      onClick={(event) => { if (!onRename || event.detail === 1) onOpen(event); }}
+      onDoubleClick={onRename ? (event) => { event.preventDefault(); onRename(); } : undefined}
+      className="min-w-0 w-full text-left"
+    >
       {/* the folder's name as it is: two spaces stay two (HTML would show one) */}
       <h2 className={`truncate ${textClass}`} style={{ whiteSpace: 'pre' }}>{display}</h2>
     </button>
@@ -654,7 +689,10 @@ function ProjectCard({
   title,
   selecting,
   selected,
+  current,
+  previewed,
   renaming,
+  renameOnDoubleClick,
   onToggleSelect,
   onOpen,
   onStartRename,
@@ -676,12 +714,20 @@ function ProjectCard({
           onClick={open}
           className="relative block aspect-video w-full overflow-hidden rounded-lg bg-[var(--surface-2)] text-left ring-1 ring-[var(--border)] transition duration-200 hover:brightness-[1.04]"
           aria-label={title}
+          aria-current={current ? 'true' : undefined}
           aria-pressed={selecting ? selected : undefined}
         >
           <PosterMedia project={project} shade />
           {/* chosen: an outline drawn inside the card, over its picture, so the list's edge never cuts it */}
           {selected ? <span aria-hidden className="pointer-events-none absolute inset-0 z-[1] rounded-lg ring-2 ring-inset ring-[var(--accent)]" /> : null}
+          {/* picked for the left pane: ink, not the accent: it is where you are looking, not something to delete */}
+          {previewed ? <span aria-hidden className="pointer-events-none absolute inset-0 z-[1] rounded-lg ring-2 ring-inset ring-[var(--text)]" /> : null}
           {project.missing ? <span aria-hidden className="absolute inset-0 bg-black/45" /> : null}
+          {current && !selecting ? (
+            <span className="absolute left-2 top-2 z-[2] rounded bg-[var(--text)] px-1.5 py-0.5 text-[10px] font-medium leading-none text-[var(--panel)]">
+              {t('projectStage.currentChip')}
+            </span>
+          ) : null}
           {project.duration && !project.missing ? (
             <div className="absolute bottom-2 right-2 text-[10.5px] font-medium text-white/80">
               <span className="flex items-center gap-1 rounded bg-black/40 px-1.5 py-0.5 tabular-nums backdrop-blur-sm">
@@ -703,6 +749,7 @@ function ProjectCard({
             renaming={renaming}
             size="card"
             onOpen={open}
+            onRename={renameOnDoubleClick && !selecting ? onStartRename : undefined}
             onCommit={onCommitRename}
             onCancel={onCancelRename}
           />
@@ -787,7 +834,10 @@ function ProjectListRow({
   title,
   selecting,
   selected,
+  current,
+  previewed,
   renaming,
+  renameOnDoubleClick,
   onToggleSelect,
   onOpen,
   onStartRename,
@@ -802,16 +852,23 @@ function ProjectListRow({
   const language = useLanguage();
   const open = selecting ? onToggleSelect : onOpen;
   return (
-    <article className={`group flex min-w-0 items-center gap-3 py-4 sm:gap-4 ${selected ? 'bg-[var(--bg-hover)]/40' : ''}`}>
+    <article className={`group flex min-w-0 items-center gap-3 py-4 sm:gap-4 ${selected || previewed ? 'bg-[var(--bg-hover)]/40' : ''}`}>
       <div className="relative shrink-0">
         <button
           type="button"
           onClick={open}
           className="relative block aspect-video w-28 overflow-hidden rounded-md bg-[var(--surface-2)] ring-1 ring-[var(--border)] sm:w-36"
           aria-label={title}
+          aria-current={current ? 'true' : undefined}
         >
           <PosterMedia project={project} />
           {selected ? <span aria-hidden className="pointer-events-none absolute inset-0 z-[1] rounded-md ring-2 ring-inset ring-[var(--accent)]" /> : null}
+          {previewed ? <span aria-hidden className="pointer-events-none absolute inset-0 z-[1] rounded-md ring-2 ring-inset ring-[var(--text)]" /> : null}
+          {current && !selecting ? (
+            <span className="absolute left-1.5 top-1.5 z-[2] rounded bg-[var(--text)] px-1.5 py-0.5 text-[10px] font-medium leading-none text-[var(--panel)]">
+              {t('projectStage.currentChip')}
+            </span>
+          ) : null}
         </button>
         <SelectToggle selecting={selecting} selected={selected} onToggle={onToggleSelect} label={t('library.toggleSelect')} />
       </div>
@@ -822,6 +879,7 @@ function ProjectListRow({
           renaming={renaming}
           size="list"
           onOpen={open}
+          onRename={renameOnDoubleClick && !selecting ? onStartRename : undefined}
           onCommit={onCommitRename}
           onCancel={onCancelRename}
         />

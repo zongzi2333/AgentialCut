@@ -10,6 +10,7 @@ import * as React from 'react';
 import { BookmarkPlus, ClipboardCopy, ClipboardPaste, GalleryVerticalEnd, Layers, LibraryBig, MessageSquarePlus, MonitorDown, Settings2, TriangleAlert, Upload } from 'lucide-react';
 import { applyOps } from '../../../server/ops.mjs';
 import { api, ApiError, PREFS_EVENT, projectEvents, type Clip, type Film, type Listing, type Op, type ProjectFilm, type ProjectSettings } from '@/api';
+import { posterUrl } from './ProjectCover';
 import { useT } from '@/i18n';
 import { useFilm, type Step } from '@/editor/use-film';
 import { Player } from '@/editor/player';
@@ -697,9 +698,11 @@ export function ProjectView({ projectId, onProject, onLeave }: {
   /* open whenever the project opens (a reload too); closed, it stays closed until then or until a selection opens it */
   const [inspectorOpen, setInspectorOpen] = React.useState(true);
   const closeInspector = React.useCallback(() => setInspectorOpen(false), [setInspectorOpen]);
-  /* Where the workflow stands. Editing is where a project opens; the other steps are visits, not panes, so the editor
-     is unmounted while they are shown and comes back as it was (the film's state lives above it). */
-  const [workflowStage, setWorkflowStage] = React.useState<WorkflowStage>('edit');
+  /* Where the workflow stands. A project opens at its first step: the film's facts and its library, with editing one
+     click away; the others are visits, so the editor is unmounted while they are shown and comes back as it was. */
+  const [workflowStage, setWorkflowStage] = React.useState<WorkflowStage>('project');
+  /* the keys that move through the workflow call this (it is defined below, where the film is in hand) */
+  const stageGo = React.useRef<(stage: WorkflowStage) => void>(() => {});
   const [rowWidth, setRowWidth] = React.useState(0);
   const [colHeight, setColHeight] = React.useState(0);
   React.useEffect(() => {
@@ -2417,6 +2420,13 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     const take = () => event.preventDefault();
     const once = !event.repeat;
     switch (cmd) {
+      /* the six steps, from the keys set in Settings (none by default: Tab is focus, not a modifier) */
+      case 'stage-project': case 'stage-media': case 'stage-roughcut':
+      case 'stage-edit': case 'stage-sound': case 'stage-deliver': {
+        take();
+        stageGo.current(cmd.slice('stage-'.length) as WorkflowStage);
+        return;
+      }
       case 'shuttle-back': case 'shuttle-stop': case 'shuttle-forward': {
         /* the source viewer has its own playhead: J / K / L are the film's only while the film is shown */
         if (pickedMedia || !(totalMs > 0)) return;
@@ -2675,6 +2685,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     if (next !== 'edit' && playing) toggle();
     setWorkflowStage(next);
   };
+  stageGo.current = goStage;
 
   const value = film.film;
   const viewerReady = Boolean(info);
@@ -3171,8 +3182,10 @@ export function ProjectView({ projectId, onProject, onLeave }: {
               />
             ) : workflowStage === 'project' ? (
               <ProjectStage
+                projectId={projectId}
                 title={title}
                 folder={folder}
+                poster={posterUrl({ id: projectId, cover: loaded.project.cover })}
                 stage={stage}
                 fps={projectFps}
                 durationMs={totalMs}
@@ -3180,8 +3193,10 @@ export function ProjectView({ projectId, onProject, onLeave }: {
                 clips={filmSummary.clips}
                 captions={subs.count}
                 onReveal={() => reveal('')}
-                onMedia={() => setWorkflowStage('media')}
                 onExport={() => setExportOpen(true)}
+                onEdit={() => setWorkflowStage('edit')}
+                onOpenProject={(id) => onProject(id)}
+                onLeave={onLeave}
               />
             ) : workflowStage === 'sound' ? (
               <SoundStage durationMs={totalMs} tracks={soundTrackCount} onNext={() => setWorkflowStage('deliver')} />

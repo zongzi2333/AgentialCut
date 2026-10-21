@@ -79,6 +79,13 @@ export const ACTIONS = [
   { id: 'paste-attrs', tab: 'basic', keys: ['mod+shift+v'] },
   /* the rest */
   { id: 'refer', tab: 'other', keys: ['mod+l'] },
+  /* the workflow's six steps: no default keys (Tab is the focus key, not a modifier); set them in Settings */
+  { id: 'stage-project', tab: 'other', keys: [] },
+  { id: 'stage-media', tab: 'other', keys: [] },
+  { id: 'stage-roughcut', tab: 'other', keys: [] },
+  { id: 'stage-edit', tab: 'other', keys: [] },
+  { id: 'stage-sound', tab: 'other', keys: [] },
+  { id: 'stage-deliver', tab: 'other', keys: [] },
 ] as const satisfies readonly { id: string; tab: KeyTab; keys: readonly string[] }[];
 
 export type ActionId = (typeof ACTIONS)[number]['id'];

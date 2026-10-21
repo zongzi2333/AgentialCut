@@ -236,6 +236,10 @@ export function ProjectsPopover({
   onOpen,
   onCurrentRemoved,
   onClose,
+  embedded = false,
+  heading,
+  previewId = null,
+  onPreview,
 }: {
   open: boolean;
   /** The project open in the editor ("" when none: Studio has no project to show, and this window is all there is). */
@@ -249,18 +253,30 @@ export function ProjectsPopover({
   onCurrentRemoved: () => void;
   /** Missing: the window cannot be closed (there is no project behind it). */
   onClose?: () => void;
+  /** In a pane of the project page rather than a window: no backdrop, no close, no examples switch. */
+  embedded?: boolean;
+  /** The list's title, in place of "Projects" (the page says "Project library"). */
+  heading?: React.ReactNode;
+  /** The card picked for the page's left pane. */
+  previewId?: string | null;
+  /** A click picks a project (with its folder's name, for the pane) instead of opening it. */
+  onPreview?: (project: LibraryProject | null, folderName?: string) => void;
 }) {
   const t = useT();
-  const lib = useProjectLibrary(open);
+  const active = embedded || open;
+  const lib = useProjectLibrary(active);
   const { flash } = lib;
   const cover = useProjectCover(lib.coverChanged, React.useCallback(() => flash(t('projects.coverFailed')), [flash, t]));
   /* each time it opens: the projects (the examples are a switch away) */
   const [view, setView] = React.useState<LauncherView>('projects');
-  React.useEffect(() => { if (open) setView('projects'); }, [open]);
+  React.useEffect(() => { if (active) setView('projects'); }, [active]);
   const showView = setView;
   const [pendingDelete, setPendingDelete] = React.useState<string[] | null>(null);
   const [pendingFolder, setPendingFolder] = React.useState<ProjectFolder | null>(null);
   const [busy, setBusy] = React.useState<'creating' | 'opening' | null>(null);
+  /* the project page asks for a name before it makes a project; the popover makes one at once, as it always did */
+  const [namingNew, setNamingNew] = React.useState<{ folderId: string | null } | null>(null);
+  const [newName, setNewName] = React.useState('');
   /* Studio's folder browser (no app to pick folders), "Get from GitHub", and a folder without a film to start one in */
   const [browser, setBrowser] = React.useState<{ mode: 'open' } | { mode: 'locate'; project: LibraryProject } | null>(null);
   const [github, setGithub] = React.useState<{ url?: string; start?: boolean; title?: string } | null>(null);
@@ -268,11 +284,11 @@ export function ProjectsPopover({
   const close = React.useCallback(() => onClose?.(), [onClose]);
 
   React.useEffect(() => {
-    if (!open) return undefined;
+    if (!active || embedded) return undefined;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !pendingDelete && !pendingFolder && !askStart) close(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, close, pendingDelete, pendingFolder, askStart]);
+  }, [active, embedded, close, pendingDelete, pendingFolder, askStart]);
 
   const go = (projectId: string, kind: 'creating' | 'opening') => {
     /* the project already open: nowhere to go, and an "Opening" that would never end */
@@ -293,7 +309,7 @@ export function ProjectsPopover({
     onOpen(projectId);
   };
   /* closed: nothing in progress shows when it opens again */
-  React.useEffect(() => { if (!open) setBusy(null); }, [open]);
+  React.useEffect(() => { if (!active) setBusy(null); }, [active]);
   /* another project opened: done */
   const latestClose = React.useRef(close);
   latestClose.current = close;
@@ -309,9 +325,20 @@ export function ProjectsPopover({
 
   /** A new project in `folderId` (null: the top level), named as Studio names it (Untitled, Untitled 2…), opened at once: it is renamed later. */
   async function newProject(folderId: string | null) {
+    /* in the project page: ask for the name first, then make it (the page has room for a dialog; the popover never had one) */
+    if (embedded) {
+      setNewName(t('project.untitled'));
+      setNamingNew({ folderId });
+      return;
+    }
+    await createProject(folderId, t('project.untitled'));
+  }
+
+  async function createProject(folderId: string | null, name: string) {
     setBusy('creating');
     try {
-      const project = await newProjectIn(folderId, { create: () => api.newProject(t('project.untitled')), move: folderApi.move });
+      const project = await newProjectIn(folderId, { create: () => api.newProject(name.trim() || t('project.untitled')), move: folderApi.move });
+      setNamingNew(null);
       go(project.id, 'creating');
     } catch {
       setBusy(null);
@@ -392,7 +419,20 @@ export function ProjectsPopover({
     else lib.flash(t('projects.dropFolder'));
   };
 
-  if (!open) return null;
+  /* a card picked in the library, with its folder's name for the pane (one stable callback: the preview stays fresh) */
+  const pickPreview = React.useCallback((project: LibraryProject) => {
+    onPreview?.(project, lib.folders.find((f) => f.id === project.folderId)?.name);
+  }, [onPreview, lib.folders]);
+
+  /* the previewed project, kept fresh: renamed, moved, or gone (deleted here or elsewhere) */
+  React.useEffect(() => {
+    if (!embedded || !previewId) return;
+    const project = lib.projects.find((p) => p.id === previewId);
+    if (!project) { onPreview?.(null); return; }
+    pickPreview(project);
+  }, [embedded, previewId, lib.projects, pickPreview, onPreview]);
+
+  if (!active) return null;
 
   /* what the delete dialog says: a project whose folder is gone only leaves the list (the server keeps to that too) */
   const pendingMissing = (pendingDelete ?? []).filter((id) => lib.projects.find((p) => p.id === id)?.missing).length;
@@ -406,24 +446,10 @@ export function ProjectsPopover({
   /* what deleting it takes: its projects and those of the folders inside it */
   const folderHeld = pendingFolder ? (folderCounts(lib.projects, lib.folders)[pendingFolder.id] ?? 0) : 0;
 
-  const content = (
-    <>
-      <div className="fixed inset-0 z-[10040] bg-black/60" onMouseDown={close} />
-      <div
-        role="dialog"
-        aria-label={t('project.projects')}
-        aria-modal="true"
-        className="fixed left-1/2 top-1/2 z-[10050] flex -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-[var(--border-strong)] bg-[var(--app-content-bg)] shadow-[0_24px_64px_rgba(0,0,0,0.35)]"
-        style={{
-          width: 'min(1080px, calc(100vw - 64px))',
-          height: 'min(760px, calc(100vh - 96px))',
-        }}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
-      >
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-          {cover.picker}
-          {view === 'examples' ? (
+  const body = (
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      {cover.picker}
+      {!embedded && view === 'examples' ? (
             <ExamplesGallery
               mode="start"
               heading={<LauncherSwitch view={view} onView={showView} />}
@@ -433,7 +459,14 @@ export function ProjectsPopover({
           ) : lib.loaded ? (
             <ProjectCoverContext.Provider value={cover.actions}>
             <ProjectsView
-              heading={<LauncherSwitch view={view} onView={showView} />}
+              heading={embedded
+                ? heading ?? (
+                  <div className="mr-auto flex min-w-0 items-baseline gap-2">
+                    <h2 className="truncate text-[17px] font-semibold tracking-[-0.01em] text-[var(--text)]">{t('projectStage.library')}</h2>
+                    <span className="shrink-0 text-[11.5px] tabular-nums text-[var(--text-faint)]">{t('projectStage.count').replace('{n}', String(lib.projects.length))}</span>
+                  </div>
+                )
+                : <LauncherSwitch view={view} onView={showView} />}
               projects={lib.projects}
               creating={busy !== null}
               onNewProject={(folderId) => void newProject(folderId)}
@@ -460,7 +493,10 @@ export function ProjectsPopover({
               }}
               onMoveToFolder={lib.moveProject}
               onMoveFolder={lib.moveFolder}
-              onClose={onClose}
+              onClose={embedded ? undefined : onClose}
+              currentId={currentProjectId}
+              previewId={embedded ? previewId : null}
+              onPreview={embedded ? pickPreview : undefined}
             />
             </ProjectCoverContext.Provider>
           ) : lib.loadFailed ? (
@@ -479,20 +515,62 @@ export function ProjectsPopover({
               <Loader2 size={18} className="animate-spin" />
             </div>
           )}
+      {busy ? (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-[var(--app-content-bg)]/70">
+          <div className="flex items-center gap-2 rounded-lg bg-[var(--surface)] px-4 py-3 text-sm shadow-lg">
+            <Loader2 size={16} className="animate-spin" />{t(busy === 'creating' ? 'projects.creating' : 'projects.opening')}
+          </div>
         </div>
-        {busy ? (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[var(--app-content-bg)]/70">
-            <div className="flex items-center gap-2 rounded-lg bg-[var(--surface)] px-4 py-3 text-sm shadow-lg">
-              <Loader2 size={16} className="animate-spin" />{t(busy === 'creating' ? 'projects.creating' : 'projects.opening')}
+      ) : null}
+      {lib.error ? (
+        <div role="alert" className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-full border border-[var(--err)]/40 bg-[var(--surface)] px-4 py-2 text-[12.5px] font-medium text-[var(--err)] shadow-[var(--shadow-lg)]">
+          {lib.error}
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const dialogs = (
+    <>
+      {namingNew ? (
+        <div
+          className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/50 p-4"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setNamingNew(null); }}
+        >
+          <div role="dialog" aria-modal="true" aria-label={t('projects.newProject')}
+            className="flex w-full max-w-[400px] flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-lg)]">
+            <div className="flex flex-col gap-1">
+              <h3 className="text-[15px] font-semibold text-[var(--text)]">{t('projects.newProject')}</h3>
+              <p className="text-[12px] leading-relaxed text-[var(--text-muted)]">{t('projects.newProjectHint')}</p>
+            </div>
+            <input
+              autoFocus
+              value={newName}
+              maxLength={80}
+              placeholder={t('projects.projectNamePlaceholder')}
+              aria-label={t('projects.projectNamePlaceholder')}
+              onChange={(event) => setNewName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && newName.trim()) void createProject(namingNew.folderId, newName);
+                if (event.key === 'Escape') setNamingNew(null);
+              }}
+              onFocus={(event) => event.currentTarget.select()}
+              className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 text-[13px] text-[var(--text)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--border-strong)]"
+            />
+            <div className="mt-1 flex items-center justify-end gap-2">
+              <button type="button" onClick={() => setNamingNew(null)}
+                className="h-8 rounded-lg px-3 text-[12.5px] font-medium text-[var(--text)] transition hover:bg-[var(--bg-hover)]">
+                {t('confirm.cancel')}
+              </button>
+              <button type="button" disabled={!newName.trim()}
+                onClick={() => void createProject(namingNew.folderId, newName)}
+                className="h-8 rounded-lg bg-[var(--text)] px-4 text-[12.5px] font-medium text-[var(--panel)] transition hover:opacity-90 disabled:pointer-events-none disabled:opacity-40">
+                {t('projects.create')}
+              </button>
             </div>
           </div>
-        ) : null}
-        {lib.error ? (
-          <div role="alert" className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-full border border-[var(--err)]/40 bg-[var(--surface)] px-4 py-2 text-[12.5px] font-medium text-[var(--err)] shadow-[var(--shadow-lg)]">
-            {lib.error}
-          </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       <ConfirmDialog
         open={!!pendingDelete}
         title={deleteTitle}
@@ -563,5 +641,35 @@ export function ProjectsPopover({
       />
     </>
   );
-  return createPortal(content, document.body);
+
+  if (embedded) {
+    return (
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--dock-pane)]" onDragOver={onDragOver} onDrop={onDrop}>
+        {body}
+        {dialogs}
+      </div>
+    );
+  }
+
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-[10040] bg-black/60" onMouseDown={close} />
+      <div
+        role="dialog"
+        aria-label={t('project.projects')}
+        aria-modal="true"
+        className="fixed left-1/2 top-1/2 z-[10050] flex -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-[var(--border-strong)] bg-[var(--app-content-bg)] shadow-[0_24px_64px_rgba(0,0,0,0.35)]"
+        style={{
+          width: 'min(1080px, calc(100vw - 64px))',
+          height: 'min(760px, calc(100vh - 96px))',
+        }}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+      >
+        {body}
+      </div>
+      {dialogs}
+    </>,
+    document.body,
+  );
 }

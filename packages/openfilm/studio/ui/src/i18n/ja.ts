@@ -1819,6 +1819,12 @@ export const ja: Words = {
         "copy-attrs": "属性をコピー",
         "paste-attrs": "属性をペースト",
         "refer": "チャットに追加",
+        "stage-project": "プロジェクトのステップへ",
+        "stage-media": "素材のステップへ",
+        "stage-roughcut": "絵コンテとラフカットのステップへ",
+        "stage-edit": "編集のステップへ",
+        "stage-sound": "サウンドのステップへ",
+        "stage-deliver": "納品のステップへ",
       },
     },
     providers: {

@@ -1819,6 +1819,12 @@ export const es: Words = {
         "copy-attrs": "Copiar atributos",
         "paste-attrs": "Pegar atributos",
         "refer": "Añadir al chat",
+        "stage-project": "Ir al paso Proyecto",
+        "stage-media": "Ir al paso Medios",
+        "stage-roughcut": "Ir al paso Guion gráfico y montaje",
+        "stage-edit": "Ir al paso Edición",
+        "stage-sound": "Ir al paso Sonido",
+        "stage-deliver": "Ir al paso Entrega",
       },
     },
     providers: {
