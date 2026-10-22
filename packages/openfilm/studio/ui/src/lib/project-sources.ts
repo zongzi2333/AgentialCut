@@ -119,6 +119,12 @@ export const sourcesApi = {
   exampleFolder: (id: string) => call<{ folder: string }>(`examples/${encodeURIComponent(id)}/folder`, 'POST').then((r) => r.folder),
   skills: (projectId?: string | null) => call<{ skills: SkillEntry[] }>(`skills${projectId ? `?project=${encodeURIComponent(projectId)}` : ''}`)
     .then((r) => { seen.skills.set(projectId ?? '', r.skills); return r.skills; }, () => seenSkills(projectId) ?? []),
+  /** copy a folder holding SKILL.md (or several skill folders) into the person's own Skills/ */
+  importSkill: async (path: string, projectId?: string | null): Promise<void> => {
+    await call<{ skills: SkillEntry[] }>('skills/import', 'POST', { path });
+    window.dispatchEvent(new Event(SKILLS_CHANGED));
+    if (projectId) await sourcesApi.skills(projectId);
+  },
   setSkillCover: async (name: string, cover: string | null, projectId?: string | null): Promise<string | null> => {
     const path = `skills/${encodeURIComponent(name)}/cover${projectId ? `?project=${encodeURIComponent(projectId)}` : ''}`;
     const result = await call<{ cover: string | null }>(path, cover === null ? 'DELETE' : 'PUT', cover === null ? undefined : { cover });

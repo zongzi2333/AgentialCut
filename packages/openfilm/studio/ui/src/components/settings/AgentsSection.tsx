@@ -32,6 +32,7 @@ import { agentMark } from '@/lib/provider-marks';
 import { SettingsSelect } from './SettingsSelect';
 import { SettingsButton, SettingsField, SettingsGroup, SettingsInset, SettingsItem, SettingsLinkButton, SettingsPage, SettingsStatus, SettingsSwitch, settingsError } from './ui';
 import { ReportLink } from './DiagnosticsGroup';
+import { AgentCardsSection } from './AgentCardsSection';
 
 function useHostAgents(): HostAgent[] | null {
   const [agents, setAgents] = React.useState<HostAgent[] | null>(null);
@@ -117,7 +118,7 @@ export function AgentsSection() {
   const [diagnosis, setDiagnosis] = React.useState<{ id: HostAgentId; report: HostAgentDiagnosis | null; copied?: boolean } | null>(null);
   /* the agent whose installer the person is asked about */
   const [confirming, setConfirming] = React.useState<HostAgentId | null>(null);
-  if (!host) return null;
+  if (!host) return <AgentCardsSection />;
 
   const act = (id: HostAgentId, run: () => Promise<{ ok?: boolean; error?: string } | unknown>) => {
     setBusy(id);
@@ -359,6 +360,7 @@ export function AgentsSection() {
   const more = others.filter((a) => !a.shown);
   return (
     <SettingsPage note={t('settings.agents.intro')}>
+      <AgentCardsSection embedded />
       <SettingsGroup title={t('settings.agents.groupYours')} footnote={t('settings.agents.showHint')}>
         {[...always, ...others.filter((a) => a.shown)].map((a) => row(a))}
       </SettingsGroup>

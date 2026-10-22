@@ -19,7 +19,7 @@ export function SettingsSelect<T extends string>({ label, value, options, onChan
   const [open, setOpen] = React.useState(false);
   const list = React.useRef<HTMLDivElement>(null);
   const typed = React.useRef({ text: '', at: 0 });
-  const selected = options.find((option) => option.value === value) ?? options[0]!;
+  const selected = options.find((option) => option.value === value) ?? options[0] ?? { value: /** @type {T} */ (''), label };
 
   /* the list opens on the chosen one */
   React.useEffect(() => {

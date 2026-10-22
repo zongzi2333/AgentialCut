@@ -34,7 +34,7 @@ const keepKey = (to: string) => {
 };
 
 const projectIn = (path: string) => /^\/projects\/([\w-]+)/.exec(path)?.[1] ?? null;
-const SECTION_IDS = new Set<SettingsSection>(['general', 'agents', 'providers', 'models', 'vectorStore', 'developer', 'shortcuts', 'advanced']);
+const SECTION_IDS = new Set<SettingsSection>(['general', 'agents', 'providers', 'vectorStore', 'developer', 'shortcuts', 'advanced']);
 const settingsIn = (path: string): SettingsSection | null => {
   if (!path.startsWith('/settings')) return null;
   const asked = path.split('/')[2] as SettingsSection | undefined;

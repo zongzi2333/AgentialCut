@@ -95,7 +95,7 @@ import { PasteAttrsDialog } from './PasteAttrsDialog';
 import { ExportTray, type ExportTrayHandle } from './export/ExportTray';
 import { DeliverStage } from './workflow/DeliverStage';
 import { ProjectStage } from './workflow/ProjectStage';
-import { RoughCutStage } from './workflow/RoughCutStage';
+import { StoryboardStage } from './workflow/storyboard/StoryboardStage';
 import { SoundStage } from './workflow/SoundStage';
 import { WorkflowBar, type WorkflowStage } from './workflow/WorkflowBar';
 import { MediaLibraryStage } from './media/MediaLibraryStage';
@@ -3207,12 +3207,15 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
                 error={(message) => toast.showError(message)}
               />
             ) : workflowStage === 'roughcut' ? (
-              <RoughCutStage
-                totalMs={totalMs}
-                selectedCount={selectedBlocks.length}
-                subtitleCount={subs.count}
-                trackCount={timelineTracks.length}
-                onClose={() => setWorkflowStage('edit')}
+              <StoryboardStage
+                projectId={projectId}
+                listing={listing}
+                sources={mediaSources}
+                onAddToTimeline={addBasketToTimeline}
+                onEnterEdit={() => setWorkflowStage('edit')}
+                onSettings={() => onSettings('agents', { projects: projectsOpenRef.current })}
+                notify={(message) => toast.show(message)}
+                error={(message) => toast.showError(message)}
               />
             ) : workflowStage === 'project' ? (
               <ProjectStage

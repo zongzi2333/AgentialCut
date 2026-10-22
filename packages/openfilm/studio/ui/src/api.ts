@@ -124,6 +124,7 @@ export interface SemanticLibrary {
   assets: { total: number; ready: number; stale: number; missing?: number; error: number; notIndexed: number; unsupported: number; excluded: number };
   assetStates?: Record<string, string>;
   stores: SemanticStore[];
+  storeIds?: string[];
   job: null | { id: string; store_id: string; state: string; progress: number; message?: string | null; error?: string | null; total: number; done: number };
 }
 export interface SemanticSidecar {
@@ -145,8 +146,10 @@ export interface SemanticSidecar {
 export interface SemanticStatus {
   sidecar: SemanticSidecar;
   project: SemanticLibrary | null;
+  global?: SemanticLibrary;
   libraries: SemanticLibrary[];
   models: SemanticModel[];
+  root?: string;
 }
 export interface SemanticHit {
   libraryId: string;
@@ -174,6 +177,119 @@ export interface SemanticSearchResponse {
   hits: SemanticHit[];
   meta: { returned: number; elapsedMs: number; mode: 'frame' | 'chunk'; storeIds: string[]; modelIds: string[]; indexState: string; degraded?: string };
 }
+
+/* ── storyboard: a project's draft, its candidates, and the review/apply boundary (server/storyboard.mjs) ── */
+export interface StoryboardCandidate {
+  id: string;
+  libraryId: string;
+  libraryName: string;
+  assetId: string;
+  path: string;
+  name: string;
+  kind: string;
+  startMs: number;
+  endMs: number;
+  score: number;
+  thumbUrl: string;
+  modelId?: string;
+  origin: 'library' | 'generated';
+  review?: { verdict: 'pass' | 'uncertain' | 'fail'; confidence: number; reason: string };
+}
+export interface StoryboardMatch {
+  state: 'draft' | 'matched' | 'review' | 'gap';
+  candidates: StoryboardCandidate[];
+  selectedId: string | null;
+  confidence: number;
+  query?: string;
+  stale?: boolean;
+  error?: string;
+}
+export interface StoryboardShot {
+  id: string;
+  sceneId: string;
+  order: number;
+  title: string;
+  narration: string;
+  visualIntent: string;
+  must: string[];
+  avoid: string[];
+  targetMs: number;
+  locked: boolean;
+  generated: boolean;
+  match: StoryboardMatch;
+}
+export interface StoryboardScene { id: string; title: string; order: number }
+export interface StoryboardBrief { durationMs: number; aspect: string; tone: string; notes: string }
+export interface StoryboardDocument {
+  version: 1;
+  revision: number;
+  id: string;
+  title: string;
+  brief: StoryboardBrief;
+  scenes: StoryboardScene[];
+  shots: StoryboardShot[];
+  source: 'manual' | 'local' | 'ai';
+  createdAt: number;
+  updatedAt: number;
+  handedOffAt: number | null;
+  roughcut: null | { createdAt: number; durationMs: number; clips: HandoffClip[]; gaps: string[] };
+}
+export interface HandoffClip { shotId: string; path: string; name: string; startMs: number; endMs: number; durationMs: number }
+export interface StoryboardProposal {
+  id: string;
+  baseRevision: number;
+  source: 'local' | 'ai';
+}
+export interface StoryboardChatResponse {
+  reply: string;
+  operations: Array<Record<string, unknown>>;
+  proposal: StoryboardProposal;
+  intent?: string;
+}
+export interface PipelineStep {
+  id: string; label: string; state: 'idle' | 'running' | 'done' | 'skipped' | 'error'; detail?: string; startedAt?: number; finishedAt?: number;
+}
+export interface PipelineRun {
+  id: string; state: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; step: string; steps: PipelineStep[];
+  startedAt: number | null; updatedAt: number; finishedAt: number | null; error: string; cancelRequested: boolean;
+  storyboardRevision: number | null; applied: string[]; issues: string[];
+}
+
+/* The model services behind Settings → Agents. A key is never returned to the page. */
+
+
+/* The unified provider cards and agent cards (studio/server/provider-cards.mjs, agent-cards.mjs). */
+export type ProviderCategory = 'llm' | 'vl' | 'embedding' | 'rerank' | 'asr' | 'tts' | 'image' | 'video' | 'image-search' | 'web-search' | 'web-fetch' | 'music' | 'sfx';
+export type ProviderScope = 'cloud' | 'local';
+export interface ProviderCategoryInfo { id: ProviderCategory; label: string; cloud: boolean; local: boolean }
+export interface ProviderModel { id: string; name: string; remoteName?: string; dimension?: number; vision?: boolean; context?: number; maxOutput?: number }
+export interface ProviderConnectionView {
+  id: string; vendorId: string; name: string; scope: ProviderScope; baseUrl: string;
+  auth: 'bearer' | 'api-key' | 'none'; authHeader?: string; keyEnv?: string; headers?: Record<string, string>;
+  hasKey?: boolean; last4?: string; key?: string;
+}
+export interface ProviderCardView {
+  id: string; catalogId?: string; vendorId: string; name: string; category: ProviderCategory;
+  scope: ProviderScope; protocol: string; connectionId: string;
+  connectionOverride?: Partial<ProviderConnectionView>; models: ProviderModel[]; defaultModelId: string;
+  options?: Record<string, unknown>; enabled: boolean; order: number;
+  builtin?: { providerId: string; verb: string }; docsUrl?: string;
+}
+export interface ProviderStateView { revision: number; connections: ProviderConnectionView[]; cards: ProviderCardView[]; defaults: Record<string, string> }
+export interface ProviderCatalogEntry {
+  id: string; vendorId: string; vendorName: string; name: string; category: ProviderCategory;
+  scope: ProviderScope; baseUrl: string; protocol: string; models: ProviderModel[]; defaultModelId: string;
+  docsUrl: string; auth: 'bearer' | 'api-key' | 'none'; builtin?: { providerId: string; verb: string };
+}
+export interface ProviderCardsResponse { state: ProviderStateView; catalog: ProviderCatalogEntry[]; categories: ProviderCategoryInfo[] }
+export interface ProviderTestResult { ok: boolean; elapsedMs: number; detail: string }
+export interface AgentRoleInfo { id: 'storyboard' | 'director' | 'query' | 'verify' | 'continuity'; label: string; hint: string }
+export interface AgentCard {
+  id: string; name: string; role: AgentRoleInfo['id'] | ''; description: string; enabled: boolean; order: number;
+  cardId: string; modelId: string; systemPrompt: string; temperature: number; maxTokens: number; topP: number; tools: string[];
+  skills: string[];
+}
+export interface AgentCardsResponse { state: { revision: number; agents: AgentCard[] }; roles: AgentRoleInfo[]; prompts?: Record<string, string> }
 /** Said on the window when they change, for what plays by them (the preview's proxies). */
 export const PREFS_EVENT = 'openfilm:prefs';
 /** Said on the window when the library moved, for the Projects list. */
@@ -266,7 +382,11 @@ export const api = {
     `${p(id)}/saved/take`, { method: 'POST', json: { path } },
   ),
   /** the project's semantic index: its status, and its sidecar's models */
-  semanticStatus: (id: string) => call<SemanticStatus>(`${p(id)}/index`),
+  semanticStatus: (id?: string | null) => call<SemanticStatus>(id ? `${p(id)}/index` : 'index'),
+  /** Move the one global vector library to a folder (contents move too). */
+  semanticSetRoot: (id: string | null, path: string) => call<SemanticStatus>(id ? `${p(id)}/index/root` : 'index/root', { method: 'PUT', json: { path } }),
+  /** Which global stores this project references. */
+  semanticSetStores: (id: string, stores: readonly string[]) => call<SemanticStatus>(`${p(id)}/index/stores`, { method: 'PUT', json: { stores } }),
   /** Stop and start the index sidecar, letting go of catalogs it holds. */
   semanticRestart: () => call<{ health: SemanticSidecar }>('index/restart', { method: 'POST', json: {} }).then((r) => r.health),
   /** Delete one vector store (its vectors) from a project or external library. */
@@ -287,6 +407,27 @@ export const api = {
   semanticLibraries: () => call<{ libraries: { id: string; name: string; path: string; indexRoot: string }[]; health: SemanticSidecar }>('index/libraries'),
   semanticAddLibrary: (body: { name?: string; path: string; indexRoot?: string }) => call<{ library: { id: string; name: string; path: string; indexRoot: string } }>('index/libraries', { method: 'POST', json: body }).then((r) => r.library),
   semanticRemoveLibrary: (id: string) => call<object>(`index/libraries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** the storyboard draft, its matches and its handoff (server/storyboard.mjs) */
+  storyboard: (id: string) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard`).then((r) => r.storyboard),
+  saveStoryboard: (id: string, storyboard: StoryboardDocument, baseRevision = storyboard.revision) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard`, { method: 'PUT', json: { storyboard, baseRevision } }).then((r) => r.storyboard),
+  generateStoryboard: (id: string, body: { text?: string; prompt?: string; brief?: Partial<StoryboardBrief> }) => call<{ storyboard: StoryboardDocument; source: 'local' | 'ai' }>(`${p(id)}/storyboard/generate`, { method: 'POST', json: body }),
+  matchStoryboard: (id: string, body: { shotIds?: string[]; topK?: number } = {}) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard/match`, { method: 'POST', json: body }).then((r) => r.storyboard),
+  fillStoryboard: (id: string, body: { shotId: string; prompt?: string; duration?: number }) => call<{ storyboard: StoryboardDocument; path: string }>(`${p(id)}/storyboard/fill`, { method: 'POST', json: body }),
+  chatStoryboard: (id: string, body: { text: string; selectedIds?: string[] }) => call<StoryboardChatResponse>(`${p(id)}/storyboard/chat`, { method: 'POST', json: body }),
+  applyStoryboard: (id: string, body: { baseRevision: number; operations: Array<Record<string, unknown>> }) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard/apply`, { method: 'POST', json: body }).then((r) => r.storyboard),
+  handoffStoryboard: (id: string) => call<{ storyboard: StoryboardDocument; clips: HandoffClip[]; gaps: string[] }>(`${p(id)}/storyboard/handoff`, { method: 'POST', json: {} }),
+  storyboardRun: (id: string) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run`).then((r) => r.run),
+  startStoryboardRun: (id: string, body: { text?: string; prompt?: string; brief?: Partial<StoryboardBrief> }) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run`, { method: 'POST', json: body }).then((r) => r.run),
+  cancelStoryboardRun: (id: string) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run/cancel`, { method: 'POST', json: {} }).then((r) => r.run),
+  undoStoryboardRun: (id: string) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard/run/undo`, { method: 'POST', json: {} }).then((r) => r.storyboard),
+  /** providers → models → agents for the film's own storyboard/director agents */
+  /** the unified provider cards: card catalog, redacted state, save/order/defaults, connection test */
+  providerCards: () => call<ProviderCardsResponse>('provider-cards'),
+  saveProviderCards: (state: ProviderStateView) => call<ProviderStateView>('provider-cards', { method: 'PUT', json: state }),
+  testProviderCard: (body: Record<string, unknown>) => call<ProviderTestResult>('provider-cards/test', { method: 'POST', json: body }),
+  /** editable agent cards: work slot, prompt, model binding and sampling */
+  agentCards: () => call<AgentCardsResponse>('agent-cards'),
+  saveAgentCards: (state: AgentCardsResponse['state']) => call<{ state: AgentCardsResponse['state']; roles: AgentRoleInfo[] }>('agent-cards', { method: 'PUT', json: state }),
 };
 
 /** A clip of a saved group: its track counted from the group's top one, its time in seconds from the group's start. */

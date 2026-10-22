@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenFilm · 分镜与粗剪界面设计稿</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#1a1a1a; --canvas:#151515; --shell:#111111; --pane:#181818; --surface:#202020;
+    --surface2:#242424; --surface3:#2b2b2b; --border:rgba(255,255,255,.07); --border-soft:rgba(255,255,255,.045);
+    --text:#dadada; --dim:#b0b0b0; --muted:#959595; --faint:#646464; --accent:#1a93fe; --accent-soft:rgba(26,147,254,.13);
+    --ok:#5eb92d; --warn:#ffbf36; --err:#eb4d4d; --tl:#1f8a86; --video:#5385bd;
+    --radius:7px; font-family: "Inter", "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--canvas); color:var(--text); font-size:12px; }
+  button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; }
+  .app { width:1600px; height:900px; margin:0 auto; padding:6px; display:flex; flex-direction:column; gap:6px; background:var(--shell); }
+  .top { height:44px; display:flex; align-items:center; gap:14px; padding:0 12px; background:var(--pane); border:1px solid var(--border); border-radius:var(--radius); }
+  .brand { display:flex; align-items:center; gap:8px; font-weight:600; font-size:13px; letter-spacing:.2px; }
+  .brand i { width:16px; height:16px; border-radius:4px; background:linear-gradient(135deg,#4fc3a1,#1a93fe); display:block; }
+  .crumb { color:var(--faint); margin-left:3px; }
+  .steps { display:flex; align-items:center; gap:3px; margin-left:auto; color:var(--muted); }
+  .step { padding:4px 7px; border-radius:5px; display:flex; align-items:center; gap:5px; }
+  .step.on { background:var(--surface2); color:var(--text); }
+  .n { width:16px; height:16px; border-radius:50%; background:var(--surface3); color:var(--faint); font-size:9px; display:grid; place-items:center; }
+  .step.on .n { background:var(--text); color:var(--pane); }
+  .top-actions { display:flex; align-items:center; gap:6px; margin-left:12px; color:var(--muted); }
+  .icon { width:26px; height:24px; border-radius:5px; display:grid; place-items:center; }
+  .icon:hover { background:rgba(255,255,255,.06); }
+  .body { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) 390px; gap:6px; }
+  .pane { background:var(--pane); border:1px solid var(--border); border-radius:var(--radius); min-width:0; min-height:0; overflow:hidden; }
+  .story { display:flex; flex-direction:column; }
+  .panehead { height:36px; flex:none; display:flex; align-items:center; gap:8px; padding:0 11px; border-bottom:1px solid var(--border-soft); color:var(--muted); }
+  .panehead b { color:var(--text); font-weight:500; font-size:12px; }
+  .spacer { flex:1; }
+  .chip { display:inline-flex; align-items:center; gap:4px; height:21px; padding:0 7px; border:1px solid var(--border); border-radius:99px; color:var(--muted); font-size:10px; white-space:nowrap; }
+  .chip.on { border-color:rgba(26,147,254,.4); background:var(--accent-soft); color:#b9ddff; }
+  .toolbar { height:42px; flex:none; display:flex; align-items:center; gap:7px; padding:0 11px; border-bottom:1px solid var(--border-soft); }
+  .seg { display:flex; gap:2px; padding:2px; border-radius:6px; background:var(--bg); border:1px solid var(--border); }
+  .seg button { height:23px; padding:0 9px; border-radius:4px; color:var(--muted); font-size:11px; }
+  .seg button.on { background:var(--surface3); color:var(--text); }
+  .btn { height:26px; padding:0 9px; border-radius:5px; border:1px solid var(--border); color:var(--dim); display:inline-flex; align-items:center; gap:5px; font-size:11px; }
+  .btn:hover { background:rgba(255,255,255,.05); }
+  .btn.primary { background:var(--text); border-color:var(--text); color:var(--pane); font-weight:600; }
+  .board { flex:1; min-height:0; overflow:auto; padding:12px 13px 10px; }
+  .scene { margin-bottom:13px; }
+  .scenehead { display:flex; align-items:center; gap:8px; margin:0 0 8px 2px; color:var(--faint); font-size:10px; letter-spacing:.09em; text-transform:uppercase; }
+  .scenehead b { color:var(--muted); font-weight:600; letter-spacing:.04em; }
+  .scenehead span { color:var(--faint); text-transform:none; letter-spacing:0; }
+  .cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:8px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,.25); }
+  .card.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .cardtop { height:27px; display:flex; align-items:center; gap:6px; padding:0 8px; border-bottom:1px solid var(--border-soft); }
+  .num { font-family:ui-monospace,Consolas,monospace; color:var(--faint); font-size:10px; }
+  .state { margin-left:auto; display:inline-flex; align-items:center; gap:4px; height:17px; padding:0 6px; border-radius:99px; font-size:9px; }
+  .state.ok { color:#8fe06c; background:rgba(94,185,45,.11); }
+  .state.review { color:var(--warn); background:rgba(255,191,54,.11); }
+  .state.gap { color:#ff8585; background:rgba(235,77,77,.1); }
+  .lock { color:var(--faint); font-size:10px; }
+  .thumb { position:relative; aspect-ratio:16/9; background:linear-gradient(135deg,#2c4058,#172330); border-bottom:1px solid var(--border-soft); overflow:hidden; }
+  .thumb.two { background:linear-gradient(135deg,#3d354c,#1e2029); }
+  .thumb.gap { background:repeating-linear-gradient(135deg,#242424,#242424 7px,#2b2b2b 7px,#2b2b2b 14px); }
+  .thumb .glow { position:absolute; inset:-20%; background:radial-gradient(circle at 48% 44%,rgba(255,255,255,.16),transparent 42%); }
+  .thumb .tc { position:absolute; left:7px; bottom:6px; color:rgba(255,255,255,.8); font:10px ui-monospace,Consolas,monospace; }
+  .thumb .score { position:absolute; right:7px; bottom:6px; padding:2px 4px; border-radius:3px; background:rgba(0,0,0,.4); color:rgba(255,255,255,.9); font-size:9px; }
+  .thumb .gapname { position:absolute; inset:0; display:grid; place-items:center; color:var(--faint); font-size:11px; }
+  .cardbody { padding:8px 8px 7px; }
+  .cardtitle { font-size:11.5px; color:var(--text); line-height:1.35; margin-bottom:3px; }
+  .cardtext { font-size:10.5px; color:var(--muted); line-height:1.45; margin-bottom:6px; }
+  .tags { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:7px; }
+  .tag { padding:2px 5px; border-radius:3px; background:var(--bg); color:var(--faint); font-size:9px; }
+  .tag.must { color:#a8d5ff; background:rgba(26,147,254,.1); }
+  .tag.avoid { color:#ffc4c4; background:rgba(235,77,77,.08); }
+  .matchline { display:flex; align-items:center; gap:5px; border-top:1px solid var(--border-soft); padding-top:6px; color:var(--faint); font-size:9.5px; min-width:0; }
+  .matchline b { color:var(--muted); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mini { margin-left:auto; color:var(--muted); border:1px solid var(--border); padding:2px 5px; border-radius:3px; font-size:9px; }
+  .card.gapcard .cardtitle { color:var(--muted); }
+  .rhythm { flex:none; padding:8px 12px 9px; border-top:1px solid var(--border-soft); background:rgba(0,0,0,.08); }
+  .rhead { display:flex; align-items:center; gap:7px; font-size:10px; color:var(--faint); margin-bottom:5px; }
+  .rhead b { color:var(--muted); font-weight:500; }
+  .ruler { display:flex; height:28px; align-items:stretch; gap:3px; padding:3px; border-radius:5px; background:#171717; }
+  .rblock { min-width:26px; border-radius:3px; background:var(--tl); position:relative; overflow:hidden; color:white; font-size:9px; padding:5px 6px; }
+  .rblock.b { background:var(--video); }
+  .rblock.g { background:repeating-linear-gradient(135deg,#3a2f1f,#3a2f1f 5px,#4b3b23 5px,#4b3b23 10px); color:#e7be73; }
+  .rlabels { display:flex; justify-content:space-between; color:var(--faint); font:9px ui-monospace,Consolas,monospace; margin-top:3px; }
+  .side { display:flex; flex-direction:column; }
+  .agentline { height:29px; margin:7px 10px 0; border:1px solid var(--border); border-radius:6px; display:flex; align-items:center; gap:6px; padding:0 7px; color:var(--muted); font-size:10px; }
+  .dot { width:6px; height:6px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px rgba(94,185,45,.1); }
+  .tabs { display:flex; gap:2px; margin:8px 10px 0; padding:2px; background:var(--bg); border:1px solid var(--border); border-radius:7px; }
+  .tabs button { flex:1; height:24px; border-radius:5px; color:var(--muted); font-size:11px; }
+  .tabs button.on { background:var(--surface3); color:var(--text); }
+  .chat { flex:1; overflow:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
+  .ctx { display:flex; flex-wrap:wrap; gap:4px; }
+  .msg { padding:8px 9px; border-radius:7px; border:1px solid var(--border); background:var(--surface2); font-size:11px; line-height:1.6; color:var(--dim); }
+  .msg.user { background:var(--bg); color:var(--muted); }
+  .msg strong { color:var(--text); font-weight:500; }
+  .proposal { border:1px solid rgba(26,147,254,.36); background:linear-gradient(180deg,rgba(26,147,254,.06),rgba(26,147,254,.015)); border-radius:8px; overflow:hidden; }
+  .proposal .pt { padding:8px 9px 5px; display:flex; gap:6px; align-items:center; color:var(--text); font-size:11px; }
+  .proposal .pt span { font-size:9px; padding:2px 5px; border-radius:3px; background:var(--accent-soft); color:#9bcfff; }
+  .proposal p { margin:0 9px 7px; color:var(--muted); font-size:10px; line-height:1.5; }
+  .proposal .pa { display:flex; gap:5px; padding:6px 8px; border-top:1px solid rgba(26,147,254,.15); }
+  .proposal .pa button { height:22px; padding:0 7px; border-radius:4px; border:1px solid var(--border); color:var(--muted); font-size:10px; }
+  .proposal .pa button.apply { margin-left:auto; background:var(--text); border-color:var(--text); color:var(--pane); font-weight:600; }
+  .composer { margin:8px 10px 10px; border:1px solid var(--border-strong); border-radius:8px; background:var(--surface); overflow:hidden; }
+  .composer textarea { display:block; width:100%; height:55px; resize:none; border:0; outline:0; background:transparent; color:var(--text); padding:8px 9px 0; font:11px/1.5 inherit; }
+  .composer textarea::placeholder { color:var(--faint); }
+  .composer .foot { display:flex; align-items:center; gap:5px; padding:3px 6px 6px; color:var(--faint); font-size:9px; }
+  .composer .send { margin-left:auto; width:23px; height:23px; border-radius:5px; background:var(--text); color:var(--pane); display:grid; place-items:center; font-size:14px; }
+  .shelf { height:166px; display:flex; flex-direction:column; background:var(--pane); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+  .shelfhead { height:36px; flex:none; display:flex; align-items:center; gap:4px; padding:0 10px; border-bottom:1px solid var(--border-soft); }
+  .sheethtab { height:25px; padding:0 8px; border-radius:5px; color:var(--muted); font-size:11px; display:flex; align-items:center; gap:4px; }
+  .sheethtab.on { background:var(--surface2); color:var(--text); }
+  .sheethtab .count { color:var(--faint); font-size:9px; }
+  .search { width:170px; height:24px; border:1px solid var(--border); border-radius:5px; padding:0 7px; color:var(--faint); display:flex; align-items:center; gap:5px; font-size:10px; }
+  .shelfbody { flex:1; display:flex; gap:8px; padding:8px 10px; overflow:auto; align-items:stretch; }
+  .shelfcard { width:155px; flex:none; display:flex; flex-direction:column; gap:4px; }
+  .shelfcard .st { position:relative; height:70px; border-radius:5px; overflow:hidden; border:1px solid var(--border); background:linear-gradient(135deg,#33445b,#1c2a38); }
+  .shelfcard .st.b { background:linear-gradient(135deg,#453a4f,#22212e); }
+  .shelfcard .st.c { background:linear-gradient(135deg,#4b4231,#25251e); }
+  .shelfcard .st .time { position:absolute; bottom:4px; left:5px; color:rgba(255,255,255,.8); font:9px ui-monospace,Consolas,monospace; }
+  .shelfcard .st .score { position:absolute; top:4px; right:5px; color:rgba(255,255,255,.88); background:rgba(0,0,0,.38); padding:1px 3px; border-radius:2px; font-size:8px; }
+  .shelfcard .nm { color:var(--dim); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .shelfcard .meta { color:var(--faint); font-size:9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .shelfcard .pick { height:18px; border:1px solid var(--border); border-radius:3px; color:var(--muted); font-size:9px; display:flex; align-items:center; justify-content:center; }
+  .note { position:fixed; left:12px; bottom:8px; color:var(--faint); font:10px ui-monospace,Consolas,monospace; }
+  @media (max-width:1250px) { .app{width:100%;height:auto;min-height:900px;} .body{grid-template-columns:minmax(0,1fr) 350px;} .cards{grid-template-columns:repeat(2,minmax(0,1fr));} }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><i></i>测试项目 <span class="crumb">/ 分镜与粗剪</span></div>
+    <nav class="steps">
+      <div class="step"><span class="n">1</span>项目</div><div class="step"><span class="n">2</span>素材库</div><div class="step on"><span class="n">3</span>分镜与粗剪</div><div class="step"><span class="n">4</span>剪辑</div><div class="step"><span class="n">5</span>音效</div><div class="step"><span class="n">6</span>交付</div>
+    </nav>
+    <div class="top-actions"><button class="icon">↶</button><button class="icon">↷</button><button class="icon">⋯</button></div>
+  </header>
+
+  <div class="body">
+    <section class="pane story">
+      <div class="panehead"><b>分镜板</b><span class="chip">8 镜 · 00:36 · 2 缺口</span><span class="spacer"></span><span class="chip on">检索验证 · 用户触发</span><button class="icon">⋯</button></div>
+      <div class="toolbar">
+        <div class="seg"><button class="on">分镜</button><button>序列</button></div>
+        <button class="btn">全部</button><button class="btn">待确认</button><button class="btn">缺镜</button>
+        <span class="spacer"></span>
+        <button class="btn">自动匹配 <span style="color:var(--faint)">⌄</span></button>
+        <button class="btn">预览</button>
+        <button class="btn primary">进入精剪</button>
+      </div>
+      <div class="board">
+        <div class="scene">
+          <div class="scenehead"><b>Scene 01 · 开场</b><span>3 镜 · 00:11</span><span class="spacer"></span><span>＋</span></div>
+          <div class="cards">
+            <article class="card sel">
+              <div class="cardtop"><span class="num">01</span><span class="state ok">已匹配 94</span><span class="lock">锁</span></div>
+              <div class="thumb"><span class="glow"></span><span class="tc">00:12.4 → 00:16.0</span><span class="score">92%</span></div>
+              <div class="cardbody">
+                <div class="cardtitle">雨夜，城市第一次亮起</div>
+                <div class="cardtext">旁白：他听见了不该听见的声音。</div>
+                <div class="tags"><span class="tag must">夜景</span><span class="tag must">手持</span><span class="tag avoid">避免正脸</span></div>
+                <div class="matchline"><b>城市夜雨_03.mp4</b><span class="mini">换一条</span><span class="mini">证据</span></div>
+              </div>
+            </article>
+            <article class="card">
+              <div class="cardtop"><span class="num">02</span><span class="state review">待确认 71</span><span class="lock"></span></div>
+              <div class="thumb two"><span class="glow"></span><span class="tc">00:08.0 → 00:11.8</span><span class="score">71%</span></div>
+              <div class="cardbody">
+                <div class="cardtitle">巷口，人物回头</div>
+                <div class="cardtext">画面：近景，冷色，缓慢推近。</div>
+                <div class="tags"><span class="tag must">近景</span><span class="tag">雨</span></div>
+                <div class="matchline"><b>night_alley_07.mp4</b><span class="mini">看证据</span><span class="mini">换一条</span></div>
+              </div>
+            </article>
+            <article class="card gapcard">
+              <div class="cardtop"><span class="num">03</span><span class="state gap">缺镜</span><span class="lock"></span></div>
+              <div class="thumb gap"><span class="gapname">没有合格候选</span></div>
+              <div class="cardbody">
+                <div class="cardtitle">门缝里的光</div>
+                <div class="cardtext">画面：极近景，门缝，呼吸声。</div>
+                <div class="tags"><span class="tag must">极近景</span><span class="tag avoid">避免人脸</span></div>
+                <div class="matchline"><b>等待匹配</b><span class="mini">重新匹配</span><span class="mini">生成补镜</span></div>
+              </div>
+            </article>
+          </div>
+        </div>
+        <div class="scene">
+          <div class="scenehead"><b>Scene 02 · 转折</b><span>3 镜 · 00:14</span><span class="spacer"></span><span>＋</span></div>
+          <div class="cards">
+            <article class="card"><div class="cardtop"><span class="num">04</span><span class="state ok">已匹配 88</span></div><div class="thumb"><span class="glow"></span><span class="tc">00:03.0 → 00:06.6</span><span class="score">88%</span></div><div class="cardbody"><div class="cardtitle">电梯门合上</div><div class="cardtext">旁白：他以为已经甩掉了。</div><div class="tags"><span class="tag must">封闭空间</span></div><div class="matchline"><b>elevator_02.mp4</b><span class="mini">证据</span></div></div></article>
+            <article class="card"><div class="cardtop"><span class="num">05</span><span class="state ok">已匹配 86</span></div><div class="thumb two"><span class="glow"></span><span class="tc">00:20.1 → 00:24.8</span><span class="score">86%</span></div><div class="cardbody"><div class="cardtitle">走廊尽头的背影</div><div class="cardtext">画面：远景，固定机位，留白。</div><div class="tags"><span class="tag must">远景</span><span class="tag must">固定</span></div><div class="matchline"><b>corridor_11.mp4</b><span class="mini">证据</span></div></div></article>
+            <article class="card"><div class="cardtop"><span class="num">06</span><span class="state ok">已匹配 90</span></div><div class="thumb"><span class="glow"></span><span class="tc">00:41.0 → 00:44.2</span><span class="score">90%</span></div><div class="cardbody"><div class="cardtitle">雨停之后</div><div class="cardtext">旁白：城市没有回答。</div><div class="tags"><span class="tag must">雨停</span></div><div class="matchline"><b>street_after_rain.mp4</b><span class="mini">证据</span></div></div></article>
+          </div>
+        </div>
+      </div>
+      <div class="rhythm">
+        <div class="rhead"><b>节奏条</b><span>点击镜头定位，拖动改变粗剪顺序</span><span class="spacer"></span><span>目标 00:30 · 当前 00:36</span></div>
+        <div class="ruler">
+          <div class="rblock" style="flex:1.1">01</div><div class="rblock b" style="flex:.9">02</div><div class="rblock g" style="flex:.8">03 缺口</div><div class="rblock b" style="flex:1">04</div><div class="rblock" style="flex:1.2">05</div><div class="rblock b" style="flex:.9">06</div><div class="rblock b" style="flex:.8">07</div><div class="rblock" style="flex:1.1">08</div>
+        </div>
+        <div class="rlabels"><span>00:00</span><span>00:12</span><span>00:24</span><span>00:36</span></div>
+      </div>
+    </section>
+
+    <aside class="pane side">
+      <div class="panehead"><b>AI 导演</b><span class="chip">选中 1 镜</span><span class="spacer"></span><button class="icon">⋯</button></div>
+      <div class="agentline"><span class="dot"></span>检索验证 Agent <span style="color:var(--faint)">·</span> 正在核对第 03 镜 <span class="spacer"></span><span style="color:var(--accent)">3 / 8</span></div>
+      <div class="tabs"><button class="on">对话</button><button>运行</button><button>历史</button></div>
+      <div class="chat">
+        <div class="ctx"><span class="chip on">全片</span><span class="chip on">选中 1 镜</span><span class="chip">缺口 2</span></div>
+        <div class="msg user">把第三镜换成更压迫的近景，整体压到 30 秒；不要动开头三镜。</div>
+        <div class="msg"><strong>导演 Agent</strong><br/>可以。第三镜目前没有合格候选，我会先保留缺口；节奏调整会影响第 04–08 镜，开头三镜不变。</div>
+        <div class="proposal">
+          <div class="pt">提案：压缩节奏到 30 秒 <span>影响 5 镜</span></div>
+          <p>减少 04/06/07 的停留时间，保留第 03 镜缺口；预计总时长 00:30.2。</p>
+          <div class="pa"><button>预览变更</button><button>仅看选中</button><button class="apply">应用</button></div>
+        </div>
+        <div class="msg"><strong>匹配 Agent</strong><br/>第 03 镜没有满足“门缝/极近景/无人脸”的候选。要改写查询重搜，还是生成补镜？</div>
+      </div>
+      <div class="composer">
+        <textarea placeholder="描述你想要的调整，或输入 / 选择动作…"></textarea>
+        <div class="foot"><span>上下文：全片 + 选中 1 镜</span><span class="spacer"></span><span>模型已连接</span><button class="send">↑</button></div>
+      </div>
+    </aside>
+  </div>
+
+  <section class="shelf">
+    <div class="shelfhead">
+      <button class="sheethtab">素材库 <span class="count">86</span></button>
+      <button class="sheethtab">素材篮 <span class="count">2</span></button>
+      <button class="sheethtab on">候选 · 第 03 镜 <span class="count">5</span></button>
+      <button class="sheethtab">缺口 <span class="count">2</span></button>
+      <span class="spacer"></span>
+      <span class="search">⌕ 搜索素材</span><button class="btn">来源：全部</button><button class="btn">筛选</button>
+    </div>
+    <div class="shelfbody">
+      <div class="shelfcard"><div class="st"><span class="score">76%</span><span class="time">00:04.2 → 00:05.1</span></div><div class="nm">door_crack_04.mp4</div><div class="meta">项目库 · 相似候选</div><div class="pick">采用</div></div>
+      <div class="shelfcard"><div class="st b"><span class="score">72%</span><span class="time">00:18.0 → 00:19.4</span></div><div class="nm">hallway_light_09.mp4</div><div class="meta">项目库 · 相似候选</div><div class="pick">采用</div></div>
+      <div class="shelfcard"><div class="st c"><span class="score">生成</span><span class="time">00:00.0 → 00:04.0</span></div><div class="nm">door_light_fill_01</div><div class="meta">生成补镜 · Kling · 待确认</div><div class="pick">预览</div></div>
+      <div class="shelfcard"><div class="st"><span class="score">68%</span><span class="time">00:31.0 → 00:32.2</span></div><div class="nm">window_rain_02.mp4</div><div class="meta">外部库 · 相似候选</div><div class="pick">采用</div></div>
+      <div class="shelfcard"><div class="st b"><span class="score">65%</span><span class="time">00:02.0 → 00:03.0</span></div><div class="nm">shadow_door_07.mp4</div><div class="meta">项目库 · 相似候选</div><div class="pick">采用</div></div>
+    </div>
+  </section>
+</div>
+<div class="note">OpenFilm · 分镜与粗剪界面设计稿 · 静态示意，不代表最终尺寸</div>
+</body>
+</html>

@@ -254,6 +254,11 @@ function Row({ file, selected, primary, used, unindexed, sources, onSelect, onOp
   return (
     <div data-media-card="" data-path={file.path} tabIndex={-1} className={`group flex items-center gap-2.5 py-2 outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${selected ? 'bg-[var(--bg-hover)]/40' : ''}`}>
       <button type="button" onClick={(event) => onSelect(file, event)} onDoubleClick={() => onOpen(file)}
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.setData('application/x-openfilm-media', file.path);
+          event.dataTransfer.effectAllowed = 'copyMove';
+        }}
         onContextMenu={(event) => { event.preventDefault(); onMenu(file, event.clientX, event.clientY); }}
         aria-label={file.name}
         className={`relative block h-[38px] w-[68px] shrink-0 overflow-hidden rounded bg-[var(--surface-2)] ring-1 ${primary ? 'ring-[var(--accent)]' : 'ring-[var(--border)]'}`}>

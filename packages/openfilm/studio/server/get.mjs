@@ -284,6 +284,23 @@ export async function runGet(root, verb, given, { via, model, yes = false, ask, 
   if (verb === 'asr' && args.force !== true && await transcriptIsCurrent(root, String(args.src))) {
     return show(await speechReceipt(root, 'asr', String(args.src), { skip: true, note: 'It has a transcript already, made since the file last changed (--force makes it again).' }));
   }
+  /* A custom provider card chosen as the default for this capability runs before the legacy
+     provider modules. Built-in cards remain routed through their modules below. */
+  const cardCategory = /** @type {Record<string, string>} */ ({ tts: 'tts', music: 'music', sfx: 'sfx', asr: 'asr', image: 'image', video: 'video' })[verb];
+  if (cardCategory && !via) {
+    /* only a run that can use a card loads the card layer: listing `openfilm get` stays light */
+    const { readProviderState, defaultCard, cardConnection } = await import('./provider-cards.mjs');
+    const cardState = readProviderState();
+    const card = defaultCard(cardState, /** @type {any} */ (cardCategory));
+    if (card && !card.builtin && card.protocol !== 'builtin' && !String(card.protocol).startsWith('builtin:')) {
+      const connection = cardConnection(card, cardState);
+      const model = card.models.find((item) => item.id === card.defaultModelId) ?? card.models[0];
+      if (connection && model) {
+        const { runCardMedia } = await import('./media-cards.mjs');
+        return await runCardMedia(root, verb, args, card, connection, model);
+      }
+    }
+  }
   const settings = await providerSettings();
   /* `--via` names one: when it cannot, it says why (no such provider, not this verb, no key) */
   const provider = await chooseProvider(/** @type {Verb} */ (verb), { via: via ?? null, settings }).catch((e) => { throw usage(e.message); });

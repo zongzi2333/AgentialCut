@@ -10,10 +10,11 @@ import { useT } from '@/i18n';
 import { useSemanticIndex } from '@/components/media/use-semantic-index';
 import { MenuSelect } from '@/components/MenuSelect';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { FolderBrowserDialog } from '@/components/ProjectSources';
 import type { SemanticLibrary, SemanticModel, SemanticStore } from '@/api';
 import { SettingsButton, SettingsGroup, SettingsItem, SettingsPage, settingsError } from './ui';
 
-export function VectorStoreSection({ projectId }: { projectId: string }) {
+export function VectorStoreSection({ projectId = null }: { projectId?: string | null }) {
   const t = useT();
   const semantic = useSemanticIndex(projectId);
   const project = semantic.status?.project ?? null;
@@ -23,6 +24,15 @@ export function VectorStoreSection({ projectId }: { projectId: string }) {
   const [restarting, setRestarting] = React.useState(false);
   const [deleting, setDeleting] = React.useState<{ library: SemanticLibrary; store: SemanticStore } | null>(null);
   const [working, setWorking] = React.useState<string | null>(null);
+  const [browser, setBrowser] = React.useState(false);
+  const [movingRoot, setMovingRoot] = React.useState(false);
+  const root = semantic.status?.root ?? project?.indexRoot ?? '';
+
+  const moveRoot = async (path: string) => {
+    setBrowser(false);
+    setMovingRoot(true);
+    try { await semantic.setRoot(path); } catch { /* the error is shown in the service group */ } finally { setMovingRoot(false); }
+  };
 
   const restart = async () => {
     setRestarting(true);
@@ -69,6 +79,33 @@ export function VectorStoreSection({ projectId }: { projectId: string }) {
         {semantic.error ? <p className={`px-1 py-2 ${settingsError}`} role="alert">{semantic.error}</p> : null}
       </SettingsGroup>
 
+      <SettingsGroup title={t('settings.vectorStore.globalLibrary')}>
+        <SettingsItem
+          title={t('settings.vectorStore.location')}
+          description={(
+            <div className="flex flex-col gap-1">
+              <span className="break-all font-mono text-[12px] text-[var(--text-muted)]" title={root}>{root}</span>
+              <span className="text-[11.5px] text-[var(--text-faint)]">{t('settings.vectorStore.locationHint')}</span>
+            </div>
+          )}
+          control={<SettingsButton disabled={movingRoot || !root} onClick={() => setBrowser(true)}><HardDrive size={13} />{t('settings.vectorStore.changeLocation')}</SettingsButton>}
+        />
+      </SettingsGroup>
+
+      {semantic.status?.global ? (
+        <SettingsGroup title="全局向量库 stores">
+          <div className="rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-[var(--text-muted)]">
+              <span className="font-medium text-[var(--text)]">{semantic.status.global.name}</span>
+              <span>{t('settings.vectorStore.assets').replace('{ready}', String(semantic.status.global.assets.ready)).replace('{total}', String(semantic.status.global.assets.total))}</span>
+              <span className="flex min-w-0 items-center gap-1 text-[11.5px]"><HardDrive size={12} /><span className="truncate font-mono" title={semantic.status.global.indexRoot}>{semantic.status.global.indexRoot}</span></span>
+            </div>
+            <StoreCards library={semantic.status.global} models={models} working={working} canRebuild={false} onRebuild={rebuild} onDelete={(library, store) => setDeleting({ library, store })} />
+            <p className="mt-2 text-[10.5px] leading-relaxed text-[var(--text-faint)]">全局 store 的增量/重建在具体项目或外部素材库的索引操作中进行；这里可以查看、删除或更换模型。</p>
+          </div>
+        </SettingsGroup>
+      ) : null}
+
       {project ? (
         <SettingsGroup title={t('settings.vectorStore.project')}>
           <div className="rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2.5">
@@ -78,7 +115,14 @@ export function VectorStoreSection({ projectId }: { projectId: string }) {
               {project.assets.missing ? <span className="text-[var(--warn)]">{t('semanticIndex.assetsMissing').replace('{n}', String(project.assets.missing))}</span> : null}
               <span className="flex min-w-0 items-center gap-1 text-[11.5px]"><HardDrive size={12} /><span className="truncate font-mono" title={project.indexRoot}>{project.indexRoot}</span></span>
             </div>
-            <StoreCards library={project} models={models} working={working} onRebuild={rebuild} onDelete={(library, store) => setDeleting({ library, store })} />
+            <StoreCards library={project} models={models} working={working}
+              selected={new Set(project.storeIds ?? project.stores.map((store) => store.id))}
+              onToggle={(id, on) => {
+                const current = new Set(project.storeIds ?? project.stores.map((store) => store.id));
+                if (on) current.add(id); else current.delete(id);
+                void semantic.setStores([...current]).catch(() => {});
+              }}
+              onRebuild={rebuild} onDelete={(library, store) => setDeleting({ library, store })} />
           </div>
         </SettingsGroup>
       ) : null}
@@ -101,7 +145,18 @@ export function VectorStoreSection({ projectId }: { projectId: string }) {
       ) : null}
 
       {!project && sidecar?.state === 'ready' ? (
-        <p className="text-[13px] text-[var(--text-faint)]">{t('settings.vectorStore.noProject')}</p>
+        <p className="text-[13px] leading-relaxed text-[var(--text-faint)]">当前没有打开项目。全局向量库、外部素材库和模型仍可查看与管理；项目区块会在打开项目后出现。</p>
+      ) : null}
+
+      {browser ? (
+        <FolderBrowserDialog
+          mode="choose"
+          title={t('settings.vectorStore.location')}
+          subtitle={root}
+          startAt={root}
+          onPick={async (path) => { await moveRoot(path); }}
+          onClose={() => setBrowser(false)}
+        />
       ) : null}
 
       <ConfirmDialog
@@ -118,10 +173,13 @@ export function VectorStoreSection({ projectId }: { projectId: string }) {
   );
 }
 
-function StoreCards({ library, models, working, onRebuild, onDelete }: {
+function StoreCards({ library, models, working, selected, onToggle, canRebuild = true, onRebuild, onDelete }: {
   library: SemanticLibrary;
   models: SemanticModel[];
   working: string | null;
+  selected?: ReadonlySet<string>;
+  onToggle?: (id: string, on: boolean) => void;
+  canRebuild?: boolean;
   onRebuild: (library: SemanticLibrary, store: SemanticStore, modelId: string) => Promise<void>;
   onDelete: (library: SemanticLibrary, store: SemanticStore) => void;
 }) {
@@ -133,17 +191,21 @@ function StoreCards({ library, models, working, onRebuild, onDelete }: {
     <div className="mt-2 grid gap-2 sm:grid-cols-2">
       {library.stores.map((store) => (
         <StoreCard key={store.id} library={library} store={store} models={models} busy={working === store.id}
+          selected={selected ? selected.has(store.id) : true} onToggle={onToggle} canRebuild={canRebuild}
           onRebuild={onRebuild} onDelete={onDelete} />
       ))}
     </div>
   );
 }
 
-function StoreCard({ library, store, models, busy, onRebuild, onDelete }: {
+function StoreCard({ library, store, models, busy, selected, onToggle, canRebuild = true, onRebuild, onDelete }: {
   library: SemanticLibrary;
   store: SemanticStore;
   models: SemanticModel[];
   busy: boolean;
+  selected: boolean;
+  onToggle?: (id: string, on: boolean) => void;
+  canRebuild?: boolean;
   onRebuild: (library: SemanticLibrary, store: SemanticStore, modelId: string) => Promise<void>;
   onDelete: (library: SemanticLibrary, store: SemanticStore) => void;
 }) {
@@ -159,6 +221,14 @@ function StoreCard({ library, store, models, busy, onRebuild, onDelete }: {
       <div className="flex items-center gap-1.5">
         <Database size={13} className="shrink-0 text-[var(--text-muted)]" />
         <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-[var(--text)]" title={store.modelId}>{model?.name ?? store.modelId}</span>
+        {onToggle ? (
+          <button type="button" aria-pressed={selected} aria-label={selected ? t('settings.vectorStore.referenced') : t('settings.vectorStore.reference')}
+            title={selected ? t('settings.vectorStore.referenced') : t('settings.vectorStore.reference')}
+            onClick={() => onToggle(store.id, !selected)}
+            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition ${selected ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]' : 'border-[var(--border-strong)] text-transparent hover:border-[var(--text-muted)]'}`}>
+            <Check size={10} />
+          </button>
+        ) : null}
         {ready ? <Check size={12} className="shrink-0 text-[var(--accent)]" /> : store.state === 'indexing' ? <Loader2 size={12} className="shrink-0 animate-spin text-[var(--text-faint)]" /> : null}
       </div>
       <div className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-[10.5px] text-[var(--text-faint)]">
@@ -181,9 +251,9 @@ function StoreCard({ library, store, models, busy, onRebuild, onDelete }: {
           disabled={disabled || !models.length}
           className="min-w-0 flex-1"
         />
-        <SettingsButton className="h-7 px-2 text-[11px]" disabled={disabled || !choice} onClick={() => void onRebuild(library, store, choice)} title={t('settings.vectorStore.rebuild')} aria-label={t('settings.vectorStore.rebuild')}>
+        {canRebuild ? <SettingsButton className="h-7 px-2 text-[11px]" disabled={disabled || !choice} onClick={() => void onRebuild(library, store, choice)} title={t('settings.vectorStore.rebuild')} aria-label={t('settings.vectorStore.rebuild')}>
           <RotateCcw size={12} />
-        </SettingsButton>
+        </SettingsButton> : null}
         <SettingsButton className="h-7 px-2 text-[11px]" disabled={disabled} onClick={() => onDelete(library, store)} title={t('settings.vectorStore.delete')} aria-label={t('settings.vectorStore.delete')}>
           <Trash2 size={12} />
         </SettingsButton>

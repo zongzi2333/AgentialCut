@@ -24,6 +24,8 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
@@ -196,6 +198,84 @@ def decode_image(data_url: str) -> np.ndarray:
 # ---------------------------------------------------------------------------------------------
 
 
+class RemoteEmbeddingEngine:
+    """An OpenAI-compatible embedding endpoint. It is used only when the card declares image input:
+    text-only models would put queries and video frames in different spaces."""
+
+    def __init__(self, model: dict[str, Any]):
+        self.model = model
+        self.dimension = int(model.get("dimension") or 0)
+        self.base = str(model.get("baseUrl") or "").rstrip("/")
+        self.key = str(model.get("apiKey") or "")
+        self.remote = str(model.get("remoteModel") or model.get("variant") or model.get("id"))
+        self.image_mode = str(model.get("imageMode") or "messages")
+        self.image_field = str(model.get("imageField") or "image_url")
+        self.image_prompt = str(model.get("imagePrompt") or "Represent the given image.")
+        self.text_as_messages = bool(model.get("textAsMessages", True))
+
+    def _post(self, payload: dict[str, Any]) -> list[float]:
+        if not self.base:
+            raise RuntimeError("remote embedding has no base URL")
+        url = self.base if self.base.endswith("/embeddings") else f"{self.base}/embeddings"
+        headers = {"content-type": "application/json"}
+        if self.key:
+            headers["authorization"] = f"Bearer {self.key}"
+        request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")[:500]
+            raise RuntimeError(f"remote embedding answered {error.code}: {detail}") from error
+        except Exception as error:
+            raise RuntimeError(f"remote embedding failed: {error}") from error
+        vector = None
+        if isinstance(body, dict):
+            data = body.get("data")
+            if isinstance(data, list) and data:
+                vector = data[0].get("embedding") if isinstance(data[0], dict) else None
+            vector = vector or body.get("embedding")
+        if not isinstance(vector, list) or not vector:
+            raise RuntimeError("remote embedding returned no vector")
+        result = np.asarray(vector, dtype=np.float32)
+        if self.dimension and result.shape[0] != self.dimension:
+            raise RuntimeError(f"remote embedding returned {result.shape[0]} dimensions, expected {self.dimension}")
+        norm = float(np.linalg.norm(result))
+        return (result / norm if norm else result).tolist()
+
+    def encode_text(self, text: str) -> np.ndarray:
+        if self.text_as_messages:
+            vector = self._post({
+                "model": self.remote,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": str(text or "")}]}],
+                "encoding_format": "float",
+            })
+        else:
+            vector = self._post({"model": self.remote, "input": [str(text or "")], "encoding_format": "float"})
+        return np.asarray([vector], dtype=np.float32)
+
+    def encode_images(self, images: list[np.ndarray]) -> np.ndarray:
+        vectors = []
+        for image in images:
+            ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+            if not ok:
+                raise RuntimeError("could not encode a frame for the remote embedding")
+            data_url = "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
+            if self.image_mode == "object":
+                payload = {"model": self.remote, "input": [{self.image_field: data_url}], "encoding_format": "float"}
+            else:
+                payload = {
+                    "model": self.remote,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": self.image_prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ]}],
+                    "encoding_format": "float",
+                }
+            vectors.append(self._post(payload))
+        return np.asarray(vectors, dtype=np.float32)
+
+
 class ModelRegistry:
     def __init__(self, root: str):
         self.root = root
@@ -235,6 +315,40 @@ class ModelRegistry:
                     "manifest": manifest,
                 }
                 found[model_id] = entry
+        remote_file = os.path.join(CONFIG_DIR, "remote-models.json")
+        if os.path.isfile(remote_file):
+            try:
+                with open(remote_file, "r", encoding="utf-8") as fh:
+                    remote = json.load(fh).get("models") or []
+                for item in remote if isinstance(remote, list) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    model_id = str(item.get("id") or "").strip()
+                    if not model_id:
+                        continue
+                    found[model_id] = {
+                        "id": model_id,
+                        "name": str(item.get("name") or model_id),
+                        "provider": "remote_embedding",
+                        "variant": str(item.get("variant") or ""),
+                        "dimension": int(item.get("dimension") or 0),
+                        "imageSize": int(item.get("imageSize") or 224),
+                        "languages": item.get("languages") if isinstance(item.get("languages"), list) else ["zh", "en"],
+                        "path": "",
+                        "license": "",
+                        "remote": True,
+                        "vision": True,
+                        "cardId": str(item.get("cardId") or ""),
+                        "remoteModel": str(item.get("remoteModel") or ""),
+                        "baseUrl": str(item.get("baseUrl") or ""),
+                        "apiKey": str(item.get("apiKey") or ""),
+                        "imageMode": str(item.get("imageMode") or "messages"),
+                        "imageField": str(item.get("imageField") or "image_url"),
+                        "imagePrompt": str(item.get("imagePrompt") or "Represent the given image."),
+                        "textAsMessages": bool(item.get("textAsMessages", True)),
+                    }
+            except Exception:
+                pass
         with self.lock:
             self.models = found
             self.engines = {k: v for k, v in self.engines.items() if k in found}
@@ -242,7 +356,7 @@ class ModelRegistry:
     def list(self) -> list[dict[str, Any]]:
         with self.lock:
             return [
-                {**{k: v for k, v in model.items() if k != "manifest"}, "path": model.get("path", "")}
+                {**{k: v for k, v in model.items() if k not in {"manifest", "apiKey", "baseUrl"}}, "path": model.get("path", "")}
                 for model in self.models.values()
             ]
 
@@ -268,6 +382,10 @@ class ModelRegistry:
                     prefer_gpu=bool(ARGS.prefer_gpu),
                     image_size=int(model["imageSize"] or 224),
                 )
+            elif provider == "remote_embedding":
+                if not model.get("vision"):
+                    raise HTTPException(409, "a text-only embedding model cannot index video frames")
+                engine = RemoteEmbeddingEngine(model)
             else:
                 raise HTTPException(409, f"provider {provider} is not available in this sidecar")
             self.engines[model_id] = engine
@@ -408,9 +526,19 @@ class Library:
                 [data[c] for c in columns],
             )
 
-    def reconcile(self, assets: list[dict[str, Any]]) -> None:
-        """Mark new, changed and missing visual media without encoding anything."""
+    def reconcile(self, assets: list[dict[str, Any]], scope: list[str] | None = None) -> None:
+        """Mark new, changed and missing visual media without encoding anything.
+
+        `scope` limits which existing rows can be marked missing: the global catalog holds absolute paths from
+        several projects, and a project's scan must not make another project's rows look gone.
+        """
         seen: set[str] = set()
+        roots = [os.path.normcase(os.path.abspath(item)) for item in (scope or []) if item]
+        def in_scope(value: str) -> bool:
+            if not roots:
+                return True
+            path = os.path.normcase(os.path.abspath(value))
+            return any(path == root or path.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
         with self.lock, self.conn:
             for item in assets:
                 rel_path = str(item.get("path") or "").strip()
@@ -443,7 +571,7 @@ class Library:
             for row in existing:
                 if row["rel_path"] in seen:
                     continue
-                if row["kind"] in {"video", "image"}:
+                if row["kind"] in {"video", "image"} and in_scope(row["rel_path"]):
                     self.conn.execute("UPDATE assets SET state = 'missing' WHERE rel_path = ?", (row["rel_path"],))
 
     def stores(self) -> list[sqlite3.Row]:
@@ -738,7 +866,7 @@ def index_asset(
     cancel: threading.Event,
 ) -> None:
     rel_path = asset["rel_path"]
-    path = safe_join(library.media_root, rel_path)
+    path = Path(rel_path) if os.path.isabs(rel_path) else safe_join(library.media_root, rel_path)
     if not path.is_file():
         raise FileNotFoundError(f"{rel_path} is missing")
     kind = asset["kind"] or kind_of(rel_path)
@@ -1174,7 +1302,8 @@ async def reconcile_library(library_id: str, request: Request) -> dict[str, Any]
     library = get_library(library_id)
     payload = await request.json()
     assets = payload.get("assets") if isinstance(payload, dict) else []
-    library.reconcile(assets if isinstance(assets, list) else [])
+    scope = payload.get("scope") if isinstance(payload, dict) else None
+    library.reconcile(assets if isinstance(assets, list) else [], scope if isinstance(scope, list) else None)
     return {"library": library.status()}
 
 
@@ -1199,7 +1328,7 @@ async def create_job(request: Request) -> dict[str, Any]:
         rel_path = str(asset.get("path") or "").strip()
         if not rel_path:
             continue
-        path = safe_join(library.media_root, rel_path)
+        path = Path(rel_path) if os.path.isabs(rel_path) else safe_join(library.media_root, rel_path)
         if not path.is_file():
             continue
         current = library.asset(rel_path)
@@ -1244,6 +1373,92 @@ def cancel_job(job_id: str, libraryId: str) -> dict[str, Any]:
     if cancel:
         cancel.set()
     return {"ok": True}
+
+
+@app.post("/v1/libraries/{library_id}/remove-source")
+async def remove_source(library_id: str, request: Request) -> dict[str, Any]:
+    library = get_library(library_id)
+    payload = await request.json()
+    root = os.path.abspath(str(payload.get("root") or ""))
+    prefix = root.rstrip(os.sep) + os.sep
+    rows = library.assets()
+    removed = 0
+    for row in rows:
+        rel_path = str(row["rel_path"] or "")
+        path = os.path.normcase(os.path.abspath(rel_path))
+        if not (path == os.path.normcase(root) or path.startswith(os.path.normcase(prefix))):
+            continue
+        for store in library.stores():
+            delete_asset_rows(library, store["store_id"], rel_path)
+        with library.lock, library.conn:
+            library.conn.execute("DELETE FROM assets WHERE rel_path = ?", (rel_path,))
+        removed += 1
+    return {"removed": removed, "library": library.status()}
+
+
+@app.post("/v1/libraries/{library_id}/import-legacy")
+async def import_legacy(library_id: str, request: Request) -> dict[str, Any]:
+    """One-time import of the old per-project catalogs and Lance stores into the global library."""
+    library = get_library(library_id)
+    payload = await request.json()
+    sources = payload.get("sources") if isinstance(payload, dict) else []
+    imported_assets = imported_stores = 0
+    for source in sources if isinstance(sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        root = os.path.abspath(str(source.get("root") or ""))
+        index_root = os.path.abspath(str(source.get("indexRoot") or ""))
+        catalog = os.path.join(index_root, "catalog.sqlite")
+        if not root or not os.path.isfile(catalog):
+            continue
+        try:
+            old = sqlite3.connect(catalog)
+            old.row_factory = sqlite3.Row
+            old_stores = list(old.execute("SELECT * FROM stores").fetchall())
+            for old_store in old_stores:
+                model = json.loads(old_store["model_json"] or "{}")
+                if not model.get("id"):
+                    continue
+                options = json.loads(old_store["options_json"] or "{}")
+                store_id = str(old_store["store_id"])
+                library.ensure_store(store_id, model, options)
+                for name in ("frames", "chunks"):
+                    try:
+                        table = lancedb.connect(os.path.join(index_root, "stores", store_id)).open_table(name)
+                        rows = table.to_arrow().to_pylist()
+                    except Exception:
+                        rows = []
+                    if rows:
+                        for row in rows:
+                            rel = str(row.get("rel_path") or "")
+                            if rel and not os.path.isabs(rel):
+                                row["rel_path"] = os.path.normpath(os.path.join(root, rel))
+                        append_rows(library, store_id, name, rows)
+                library.set_store_state(store_id, str(old_store["state"] or "ready"))
+                imported_stores += 1
+            old_assets = list(old.execute("SELECT * FROM assets").fetchall())
+            for row in old_assets:
+                rel = str(row["rel_path"] or "")
+                if not rel:
+                    continue
+                data = dict(row)
+                data["rel_path"] = rel if os.path.isabs(rel) else os.path.normpath(os.path.join(root, rel))
+                library.upsert_asset(
+                    data["rel_path"],
+                    name=data.get("name") or os.path.basename(rel),
+                    kind=data.get("kind") or kind_of(rel),
+                    content_key=data.get("content_key"),
+                    size=int(data.get("size") or 0),
+                    mtime_ms=int(data.get("mtime_ms") or 0),
+                    duration_ms=int(data.get("duration_ms") or 0),
+                    state=data.get("state") or "not-indexed",
+                    error=data.get("error"),
+                )
+                imported_assets += 1
+            old.close()
+        except Exception:
+            continue
+    return {"importedAssets": imported_assets, "importedStores": imported_stores, "library": library.status()}
 
 
 @app.delete("/v1/libraries/{library_id}/index")
@@ -1295,7 +1510,9 @@ async def search(request: Request) -> dict[str, Any]:
 @app.get("/v1/thumb")
 def thumb(libraryId: str, path: str, ms: int = 0, w: int = 320):
     library = get_library(libraryId)
-    source = safe_join(library.media_root, path)
+    if os.path.isabs(path) and library.asset(path) is None:
+        raise HTTPException(404, "no such asset")
+    source = Path(path) if os.path.isabs(path) else safe_join(library.media_root, path)
     if not source.is_file():
         raise HTTPException(404, "no such file")
     ext = source.suffix.lower()

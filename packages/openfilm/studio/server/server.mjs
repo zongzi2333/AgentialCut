@@ -50,18 +50,23 @@ import { COVER_FRAME_W, CoverError, clearCover, readCover, readCoverBody, setCov
 import { SavedError, bundlePoster, libraryPath, libraryRel, libraryRoot as savedLibrary, listLibrary, saveClip, saveFile, saveGroup, takeSaved } from './saved.mjs';
 import { FILM_FILE, clipKind, isPage } from '../../src/film-doc.mjs';
 import { moveToTrash } from './trash.mjs';
-import { listSkills, removeSkill, setSkillCover, setSkillInstalled, setSkillOn, skillOrigins, skillsInstalled, skillsOff } from '../../src/skills.mjs';
+import { addSkills, listSkills, removeSkill, setSkillCover, setSkillInstalled, setSkillOn, skillOrigins, skillsInstalled, skillsOff } from '../../src/skills.mjs';
 import { providersRoute } from './providers/index.mjs';
 import { captionRoutes } from './captions.mjs';
 import { projectSettingsRoute } from './project-settings.mjs';
 import { markersRoute } from './markers.mjs';
 import { transitionPageRoutes } from './transition-pages.mjs';
-import { createAsks, getRoute, subtitleTranscriber, subtitleTranslator } from './get.mjs';
+import { createAsks, getRoute, runGet, subtitleTranscriber, subtitleTranslator } from './get.mjs';
 import { LOCATION_KEYS, chooseFolder, locations, usableFolder } from '../../src/locations.mjs';
 import { doctor } from '../../src/doctor.mjs';
 import { recentProblems } from '../../src/problems.mjs';
 import { exportDiagnostics } from './diagnostics.mjs';
 import { SemanticIndexService } from './semantic-index.mjs';
+import { applyOperations, handoffClips, localProposal, matchStoryboard, normalizeStoryboard, readStoryboard, saveStoryboard, scaleDuration } from './storyboard.mjs';
+import { agentReady, callAgent, parseJsonReply, storyboardSchemaHint, testConnection } from './agent-runtime.mjs';
+import { readProviderState, redactState, saveProviderState, CATALOG, CATEGORIES, cardConnection, syncLegacyRuntime } from './provider-cards.mjs';
+import { readAgentState, saveAgentState, AGENT_ROLES, defaultPrompts } from './agent-cards.mjs';
+import { PIPELINE_STEPS, beginStep, clearUndo, emptyRun, failStep, finishStep, isCancelled, readRun, readUndo, skipStep, step, writeRun, writeUndo } from './pipeline.mjs';
 
 /** @typedef {import('./http.mjs').Req} Req @typedef {import('./http.mjs').Res} Res */
 
@@ -90,6 +95,261 @@ export function desktopInstaller(os, arch, base = DESKTOP_FILES) {
   if (os === 'mac') return `${base}/mac/${arch}/OpenFilm-${arch}.dmg`;
   if (os === 'win') return `${base}/win/${arch}/OpenFilm-Setup-${arch}.exe`;
   return null;
+}
+
+/**
+ * Flatten the model's nested storyboard JSON into the document shape. A model that returns a flat
+ * `shots` list is accepted too; a reply with no usable shot is an error, never an empty "success".
+ * @param {{ id?: string, name?: string, path: string }} project
+ * @param {unknown} raw @param {Record<string, unknown>} brief
+ */
+export function aiStoryboard(project, raw, brief) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
+  const scenesIn = Array.isArray(source.scenes) ? source.scenes : [];
+  const flatScenes = [];
+  const flatShots = [];
+  for (const [sceneIndex, scene] of scenesIn.entries()) {
+    if (!scene || typeof scene !== 'object') continue;
+    const sceneId = `ai_scene_${sceneIndex + 1}`;
+    flatScenes.push({ id: sceneId, title: String(scene.title ?? `Scene ${sceneIndex + 1}`), order: sceneIndex });
+    const shots = Array.isArray(scene.shots) ? scene.shots : [];
+    for (const shot of shots) {
+      if (!shot || typeof shot !== 'object') continue;
+      flatShots.push({
+        ...shot,
+        sceneId,
+        targetMs: Number(shot.targetMs) || 4000,
+        must: Array.isArray(shot.must) ? shot.must : [],
+        avoid: Array.isArray(shot.avoid) ? shot.avoid : [],
+      });
+    }
+  }
+  if (!flatShots.length && Array.isArray(source.shots)) {
+    for (const shot of source.shots) {
+      if (!shot || typeof shot !== 'object') continue;
+      flatShots.push({
+        ...shot,
+        sceneId: flatScenes[0]?.id ?? 'ai_scene_1',
+        targetMs: Number(shot.targetMs) || 4000,
+        must: Array.isArray(shot.must) ? shot.must : [],
+        avoid: Array.isArray(shot.avoid) ? shot.avoid : [],
+      });
+    }
+  }
+  if (!flatShots.length) throw new HttpError(502, '模型没有给出可用的分镜镜头');
+  if (!flatScenes.length) flatScenes.push({ id: 'ai_scene_1', title: 'Scene 01', order: 0 });
+  const doc = normalizeStoryboard({
+    id: source.id,
+    title: source.title || project.name || 'Storyboard',
+    brief: { ...(source.brief && typeof source.brief === 'object' ? source.brief : {}), ...brief },
+    scenes: flatScenes,
+    shots: flatShots,
+    source: 'ai',
+  }, project);
+  if (brief.durationMs != null) scaleDuration(doc, Number(brief.durationMs));
+  return doc;
+}
+
+/** One thumbnail as a data URL the visual reviewer can read, wherever the candidate lives. */
+async function thumbnailDataUrl(/** @type {any} */ candidate, /** @type {any} */ semanticIndex) {
+  if (!candidate?.thumbUrl) return null;
+  try {
+    const url = new URL(candidate.thumbUrl, 'http://studio.local');
+    const response = await semanticIndex.thumb(url.searchParams);
+    const type = response.headers.get('content-type') || 'image/jpeg';
+    return `data:${type};base64,${Buffer.from(await response.arrayBuffer()).toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The query agent's search words; failures fall back to the shot's own visual intent. */
+function pipelineQueryPlanner(/** @type {any} */ project) {
+  return async (/** @type {any} */ shot, /** @type {string} */ fallback) => {
+    const reply = await callAgent('query', [{
+      role: 'user',
+      content: `SHOT:\n${JSON.stringify({ title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, must: shot.must, avoid: shot.avoid, targetMs: shot.targetMs })}\n\nReturn only JSON: {"queries":["Chinese visual search query"]}.`,
+    }], { project });
+    const parsed = parseJsonReply(reply);
+    const queries = Array.isArray(parsed?.queries)
+      ? parsed.queries.filter((/** @type {unknown} */ item) => typeof item === 'string' && item.trim()).slice(0, 3)
+      : typeof parsed?.query === 'string' && parsed.query.trim() ? [parsed.query] : [];
+    return queries.length ? [...new Set([...queries, fallback])].join(' ').slice(0, 1200) : fallback;
+  };
+}
+
+/** Optional visual review of a shot's candidates; keeps every candidate and records the reason. */
+async function reviewShot(/** @type {any} */ project, /** @type {any} */ shot, /** @type {any} */ semanticIndex) {
+  const candidates = (Array.isArray(shot.match?.candidates) ? shot.match.candidates : []).slice(0, 4);
+  const withImages = [];
+  for (const [index, candidate] of candidates.entries()) {
+    const image = await thumbnailDataUrl(candidate, semanticIndex);
+    if (image) withImages.push({ candidate, index, image });
+  }
+  if (!withImages.length) return false;
+  const content = [
+    { type: 'text', text: `Review these candidate shots for: ${JSON.stringify({ title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, must: shot.must, avoid: shot.avoid })}.\nReturn only JSON: {"candidates":[{"index":1,"verdict":"pass|uncertain|fail","confidence":0,"reason":"short reason"}]}. Candidate indexes are listed below.` },
+    ...withImages.flatMap(({ candidate, index, image }) => ([
+      { type: 'text', text: `candidate ${index + 1}: ${candidate.name}` },
+      { type: 'image_url', image_url: { url: image } },
+    ])),
+  ];
+  const reply = await callAgent('verify', [{ role: 'user', content }], { project });
+  const parsed = parseJsonReply(reply);
+  const reviews = Array.isArray(parsed?.candidates) ? parsed.candidates : [];
+  for (const review of reviews) {
+    const index = Number(review?.index) - 1;
+    const candidate = candidates[index];
+    if (!candidate) continue;
+    candidate.review = {
+      verdict: review?.verdict === 'pass' || review?.verdict === 'fail' ? review.verdict : 'uncertain',
+      confidence: Math.max(0, Math.min(1, Number(review?.confidence) || 0)),
+      reason: typeof review?.reason === 'string' ? review.reason.slice(0, 500) : '',
+    };
+  }
+  const rank = (/** @type {any} */ candidate) => candidate.review?.verdict === 'fail' ? 0 : candidate.review?.verdict === 'uncertain' ? 1 : candidate.review ? 2 : 1;
+  const selected = [...candidates].sort((a, b) => rank(b) - rank(a) || (Number(b.review?.confidence ?? b.score) - Number(a.review?.confidence ?? a.score)))[0] ?? null;
+  if (selected) {
+    const confidence = Math.round(Math.max(0, Math.min(1, Number(selected.review?.confidence ?? selected.score) || 0)) * 100);
+    shot.match.selectedId = selected.id;
+    shot.match.confidence = confidence;
+    shot.match.state = selected.review?.verdict === 'fail' || confidence < 55 ? 'review' : 'matched';
+  }
+  return true;
+}
+
+/**
+ * The rough-cut pipeline: one AI pass from a script/brief to a reviewed, matched storyboard. It
+ * stops before the timeline. The document is saved after every completed stage so a failure leaves
+ * the person with the work that succeeded, and the run file says exactly where it stopped.
+ */
+async function runRoughcutPipeline(/** @type {any} */ project, /** @type {any} */ input, /** @type {any} */ semanticIndex, /** @type {any} */ run) {
+  const check = async () => {
+    const latest = readRun(project);
+    if (latest.cancelRequested) run.cancelRequested = true;
+    return run.cancelRequested;
+  };
+  const mark = async () => { await writeRun(project, run); };
+  try {
+    run.state = 'running';
+    run.startedAt = Date.now();
+    run.finishedAt = null;
+    run.error = '';
+    run.applied = [];
+    run.issues = [];
+    run.steps = PIPELINE_STEPS.map((item) => ({ ...item, state: 'idle' }));
+    await mark();
+
+    /* 1. Always the storyboard Agent, even when a storyboard exists: conversion, repair and
+       semantic visual directions are model work, not a local format fallback. */
+    if (await check()) throw new Error('cancelled');
+    if (!agentReady('storyboard')) throw new HttpError(409, '没有可用的分镜 Agent。请先在设置中绑定分镜智能体的模型。');
+    beginStep(run, 'generate');
+    await mark();
+    const current = readStoryboard(project);
+    const existing = current.shots.length ? JSON.stringify({ title: current.title, brief: current.brief, scenes: current.scenes, shots: current.shots }).slice(0, 120_000) : '';
+    const result = await callAgent('storyboard', [{
+      role: 'user',
+      content: [
+        input.text ? `SCRIPT:\n${input.text}` : '',
+        input.prompt ? `IDEA:\n${input.prompt}` : '',
+        existing ? `EXISTING STORYBOARD (convert, repair or rewrite it into a shootable storyboard; keep its facts and any explicitly locked shots):\n${existing}` : '',
+        `BRIEF:\n${JSON.stringify(input.brief ?? {})}`,
+        `Return only JSON matching: ${storyboardSchemaHint()}`,
+      ].filter(Boolean).join('\n\n'),
+    }], { project });
+    const next = aiStoryboard(project, parseJsonReply(result), input.brief ?? {});
+    const generated = await saveStoryboard(project, next, current.revision);
+    run.storyboardRevision = generated.revision;
+    finishStep(run, 'generate', `${generated.shots.length} 个镜头`);
+    await mark();
+    if (await check()) throw new Error('cancelled');
+
+    /* 2. The query Agent plans words; the semantic index returns several candidates per shot. */
+    beginStep(run, 'query');
+    beginStep(run, 'match');
+    await mark();
+    const planning = agentReady('query') ? pipelineQueryPlanner(project) : null;
+    const matched = await matchStoryboard(generated, project, semanticIndex, { topK: 10 }, planning);
+    const matchedSaved = await saveStoryboard(project, matched, generated.revision);
+    run.storyboardRevision = matchedSaved.revision;
+    finishStep(run, 'query', planning ? '由检索规划 Agent 生成查询' : '未启用检索 Agent，使用画面语义');
+    finishStep(run, 'match', `${matchedSaved.shots.filter((/** @type {any} */ shot) => shot.match.selectedId).length}/${matchedSaved.shots.length} 个镜头有候选`);
+    await mark();
+    if (await check()) throw new Error('cancelled');
+
+    /* 3. Visual review is optional; without a VL binding the semantic confidence already adopted
+       in matchStoryboard is kept. */
+    if (!agentReady('verify')) {
+      skipStep(run, 'verify', '未启用画面审核 Agent，保留检索置信度');
+    } else {
+      beginStep(run, 'verify');
+      await mark();
+      let reviewed = 0;
+      for (const shot of matchedSaved.shots) {
+        if (await check()) throw new Error('cancelled');
+        if (shot.locked || !shot.match.candidates.length) continue;
+        try { if (await reviewShot(project, shot, semanticIndex)) reviewed += 1; }
+        catch (error) { run.issues.push(`“${shot.title}”审核失败：${error instanceof Error ? error.message : String(error)}`); }
+      }
+      if (reviewed) {
+        run.storyboardRevision = (await saveStoryboard(project, matchedSaved, matchedSaved.revision)).revision;
+      }
+      finishStep(run, 'verify', reviewed ? `审核 ${reviewed} 个镜头` : '没有可审核的候选');
+    }
+    await mark();
+    if (await check()) throw new Error('cancelled');
+
+    /* 4. Continuity may apply safe structural edits; the previous document is kept for undo. */
+    if (!agentReady('continuity')) {
+      skipStep(run, 'continuity', '未启用连续性 Agent');
+    } else {
+      beginStep(run, 'continuity');
+      await mark();
+      const before = readStoryboard(project);
+      const reply = await callAgent('continuity', [{
+        role: 'user',
+        content: `STORYBOARD:\n${JSON.stringify({ title: before.title, brief: before.brief, shots: before.shots.map((shot) => ({ id: shot.id, title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, targetMs: shot.targetMs, selectedId: shot.match.selectedId, confidence: shot.match.confidence })) })}.\n\nReturn only JSON: {"issues":["..."],"operations":[]}. Allowed operations: setTargetDuration {durationMs}, updateShot {shotId,patch}, reorderShots {shotIds}. Never touch a locked shot or invent media. Only propose changes that make the sequence more coherent.`,
+      }], { project });
+      const parsed = parseJsonReply(reply);
+      run.issues = [...run.issues, ...(Array.isArray(parsed?.issues) ? parsed.issues.map(String).slice(0, 80) : [])];
+      const operations = Array.isArray(parsed?.operations) ? parsed.operations : [];
+      const safe = operations.filter((/** @type {any} */ operation) => {
+        if (!operation || typeof operation !== 'object') return false;
+        if (operation.type === 'reorderShots' || operation.type === 'setTargetDuration') return true;
+        if (operation.type === 'updateShot') {
+          const keys = Object.keys(operation.patch ?? {});
+          return keys.length > 0 && keys.every((key) => key === 'targetMs' || key === 'title');
+        }
+        return false;
+      });
+      if (safe.length) {
+        const after = applyOperations(before, safe);
+        await writeUndo(project, before);
+        run.storyboardRevision = (await saveStoryboard(project, after, before.revision)).revision;
+        run.applied = safe.map((/** @type {any} */ operation) => operation.type);
+      }
+      finishStep(run, 'continuity', `${run.issues.length} 个问题 · ${run.applied.length} 个安全修改`);
+    }
+    if (await check()) throw new Error('cancelled');
+    run.state = 'done';
+    run.step = '';
+    run.finishedAt = Date.now();
+    await mark();
+  } catch (error) {
+    if (run.cancelRequested || error instanceof Error && error.message === 'cancelled') {
+      run.state = 'cancelled';
+      run.finishedAt = Date.now();
+      for (const item of run.steps) if (item.state === 'running') skipStep(run, item.id, '已取消');
+    } else {
+      run.state = 'error';
+      run.finishedAt = Date.now();
+      const message = error instanceof Error ? error.message : String(error);
+      run.error = message;
+      for (const item of run.steps) if (item.state === 'running') failStep(run, item.id, message);
+    }
+    await mark().catch(() => {});
+  }
 }
 
 /**
@@ -206,6 +466,14 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
 
     /* ── semantic index: sidecar, models, extra libraries, jobs (semantic-index.mjs) ── */
     if (parts[0] === 'index') {
+      /* Global vector library: the same view without a project. */
+      if (parts.length === 1 && req.method === 'GET') return json(res, 200, await semanticIndex.status(null));
+      if (parts[1] === 'root' && parts.length === 2 && req.method === 'PUT') {
+        const body = /** @type {{ path?: unknown }} */ (await readJson(req) ?? {});
+        if (typeof body.path !== 'string' || !isAbsolute(body.path)) throw new HttpError(400, 'an absolute folder is required');
+        await semanticIndex.changeGlobalRoot(body.path);
+        return json(res, 200, await semanticIndex.status(null));
+      }
       if (parts[1] === 'health' && parts.length === 2 && req.method === 'GET') return json(res, 200, await semanticIndex.health());
       if (parts[1] === 'restart' && parts.length === 2 && req.method === 'POST') return json(res, 200, { health: await semanticIndex.restart() });
       if (parts[1] === 'models' && parts.length === 2 && req.method === 'GET') return json(res, 200, { models: await semanticIndex.models(), health: await semanticIndex.health() });
@@ -259,7 +527,56 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
         });
         return res.end(data);
       }
+      /* a candidate's media, wherever its library lives: project files and external folders share the
+         global vector catalog, so the preview needs to resolve its own source root, not the open project. */
+      if (parts[1] === 'media' && parts.length === 2 && req.method === 'GET') {
+        const libraryId = url.searchParams.get('libraryId') || '';
+        const file = url.searchParams.get('path') || '';
+        if (!libraryId || !file) throw new HttpError(400, 'libraryId and path are required');
+        const projects = await listProjects();
+        const project = projects.find((item) => item.id === libraryId && !item.missing);
+        const external = semanticIndex.externalLibraries().find((item) => item.id === libraryId);
+        const root = project?.path ?? external?.path;
+        if (!root) throw new HttpError(404, 'no such media library');
+        const absolute = resolve(root, file);
+        if (!inside(root, absolute)) throw new HttpError(403, 'that file is outside its library');
+        return sendMedia(req, res, absolute, { keep: true });
+      }
       throw new HttpError(404, 'no such index route');
+    }
+
+    /* ── the unified provider cards and agent cards (provider-cards.mjs, agent-cards.mjs) ── */
+    if (parts[0] === 'provider-cards') {
+      if (parts.length === 1 && req.method === 'GET') {
+        const state = readProviderState();
+        return json(res, 200, { state: redactState(state), catalog: CATALOG, categories: CATEGORIES });
+      }
+      if (parts.length === 1 && req.method === 'PUT') {
+        const saved = await saveProviderState(await readJson(req));
+        await syncLegacyRuntime(saved).catch(() => {});
+        await semanticIndex.syncRemoteModels().catch(() => {});
+        return json(res, 200, redactState(saved));
+      }
+      if (parts[1] === 'test' && parts.length === 2 && req.method === 'POST') {
+        const body = /** @type {Record<string, any>} */ (await readJson(req) ?? {});
+        const state = readProviderState();
+        const card = state.cards.find((item) => item.id === body.cardId);
+        const connection = card ? cardConnection(card, state) : state.connections.find((item) => item.id === body.connectionId);
+        return json(res, 200, await testConnection({
+          ...body,
+          baseUrl: body.baseUrl || connection?.baseUrl || '',
+          key: body.key || connection?.key || '',
+          auth: body.auth || connection?.auth,
+          authHeader: body.authHeader || connection?.authHeader,
+          headers: body.headers || connection?.headers,
+        }));
+      }
+      throw new HttpError(404, 'no such provider cards route');
+    }
+    if (parts[0] === 'agent-cards') {
+      if (parts.length === 1 && req.method === 'GET') return json(res, 200, { state: readAgentState(), roles: AGENT_ROLES, prompts: defaultPrompts() });
+      if (parts.length === 1 && req.method === 'PUT') return json(res, 200, { state: await saveAgentState(await readJson(req)), roles: AGENT_ROLES });
+      throw new HttpError(404, 'no such agent cards route');
     }
 
     /* stop: another app is taking over this machine's Studio, or `openfilm open` starts it afresh (`whenIdle`: not
@@ -510,6 +827,17 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
         throw new HttpError(e instanceof FetchError ? e.status : 404, e instanceof Error ? e.message : String(e));
       }
     }
+    /* a folder of skills copied into the person's own Skills/ (the Agent settings' pool adds real files) */
+    if (parts[0] === 'skills' && parts[1] === 'import' && parts.length === 2 && req.method === 'POST') {
+      const body = /** @type {{ path?: unknown }} */ (await readJson(req) ?? {});
+      if (typeof body.path !== 'string' || !isAbsolute(body.path)) throw new HttpError(400, 'an absolute folder is required');
+      try {
+        const added = await addSkills(body.path);
+        return json(res, 200, { skills: added.map((skill) => ({ name: skill.name, description: skill.description, source: skill.source })) });
+      } catch (e) {
+        throw new HttpError(400, e instanceof Error ? e.message : String(e));
+      }
+    }
     /* the skills a project can be made with (../../src/skills.mjs): its own, the person's, the official ones */
     if (parts[0] === 'skills' && parts.length === 1 && req.method === 'GET') {
       const id = url.searchParams.get('project');
@@ -635,6 +963,18 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     }
     /* ── the project's semantic index (semantic-index.mjs) ── */
     if (rest === 'index' && req.method === 'GET') return json(res, 200, await semanticIndex.status(project));
+    if (rest === 'index/root' && req.method === 'PUT') {
+      const body = /** @type {{ path?: unknown }} */ (await readJson(req) ?? {});
+      if (typeof body.path !== 'string' || !isAbsolute(body.path)) throw new HttpError(400, 'an absolute folder is required');
+      await semanticIndex.changeGlobalRoot(body.path);
+      return json(res, 200, await semanticIndex.status(project));
+    }
+    if (rest === 'index/stores' && req.method === 'PUT') {
+      const body = /** @type {{ stores?: unknown }} */ (await readJson(req) ?? {});
+      const stores = Array.isArray(body.stores) ? body.stores.map(String) : [];
+      semanticIndex.setProjectStores(project, stores);
+      return json(res, 200, await semanticIndex.status(project));
+    }
     if (rest === 'index' && req.method === 'DELETE') {
       await semanticIndex.removeProjectIndex(project);
       return json(res, 200, {});
@@ -646,6 +986,200 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     if (rest === 'index/search' && req.method === 'POST') {
       const body = /** @type {any} */ (await readJson(req, 24 << 20));
       return json(res, 200, await semanticIndex.search(project, body));
+    }
+    /* ── storyboard: draft, match, proposals and handoff (storyboard.mjs) ── */
+    if (rest === 'storyboard' && req.method === 'GET') return json(res, 200, { storyboard: readStoryboard(project) });
+    if (rest === 'storyboard' && req.method === 'PUT') {
+      const body = /** @type {{ storyboard?: unknown, baseRevision?: unknown }} */ (await readJson(req) ?? {});
+      if (!body.storyboard || typeof body.storyboard !== 'object') throw new HttpError(400, 'storyboard is required');
+      const base = typeof body.baseRevision === 'number' ? body.baseRevision : undefined;
+      return json(res, 200, { storyboard: await saveStoryboard(project, body.storyboard, base) });
+    }
+    if (rest === 'storyboard/run' && req.method === 'GET') return json(res, 200, { run: readRun(project) });
+    if (rest === 'storyboard/run' && req.method === 'POST') {
+      const body = /** @type {{ text?: unknown, prompt?: unknown, brief?: unknown }} */ (await readJson(req, 24 << 20) ?? {});
+      const existing = readRun(project);
+      if (existing.state === 'running') throw new HttpError(409, '分镜流水线正在运行');
+      const input = {
+        text: typeof body.text === 'string' ? body.text.slice(0, 120_000) : '',
+        prompt: typeof body.prompt === 'string' ? body.prompt.slice(0, 4000) : '',
+        brief: body.brief && typeof body.brief === 'object' ? /** @type {any} */ (body.brief) : {},
+      };
+      if (!input.text.trim() && !input.prompt.trim() && !readStoryboard(project).shots.length) throw new HttpError(400, 'a script or a prompt is required');
+      if (!agentReady('storyboard')) throw new HttpError(409, '没有可用的分镜 Agent。请先在设置中绑定分镜智能体的模型。');
+      const run = emptyRun();
+      run.id = `pipeline_${Date.now().toString(36)}`;
+      run.state = 'running';
+      run.steps = PIPELINE_STEPS.map((item) => ({ ...item, state: 'idle' }));
+      await writeRun(project, run);
+      void runRoughcutPipeline(project, input, semanticIndex, run);
+      return json(res, 200, { run });
+    }
+    if (rest === 'storyboard/run/cancel' && req.method === 'POST') {
+      const run = readRun(project);
+      if (run.state === 'running') {
+        run.cancelRequested = true;
+        await writeRun(project, run);
+      }
+      return json(res, 200, { run });
+    }
+    if (rest === 'storyboard/run/undo' && req.method === 'POST') {
+      const previous = readUndo(project);
+      if (!previous) throw new HttpError(404, '没有可撤销的 AI 连续性修改');
+      const current = readStoryboard(project);
+      const saved = await saveStoryboard(project, previous, current.revision);
+      await clearUndo(project);
+      return json(res, 200, { storyboard: saved });
+    }
+    if (rest === 'storyboard/generate' && req.method === 'POST') {
+      const body = /** @type {{ text?: unknown, prompt?: unknown, brief?: unknown }} */ (await readJson(req, 24 << 20) ?? {});
+      const input = {
+        text: typeof body.text === 'string' ? body.text : '',
+        prompt: typeof body.prompt === 'string' ? body.prompt : '',
+        brief: body.brief && typeof body.brief === 'object' ? /** @type {any} */ (body.brief) : {},
+      };
+      const existing = readStoryboard(project);
+      if (!input.text.trim() && !input.prompt.trim() && !existing.shots.length) throw new HttpError(400, 'a script or a prompt is required');
+      if (!agentReady('storyboard')) throw new HttpError(409, '没有可用的分镜 Agent。请先在设置中绑定分镜智能体的模型。');
+      const result = await callAgent('storyboard', [
+        {
+          role: 'user',
+          content: [
+            input.text ? `SCRIPT:\n${input.text}` : '',
+            input.prompt ? `IDEA:\n${input.prompt}` : '',
+            existing.shots.length ? `EXISTING STORYBOARD:\n${JSON.stringify({ title: existing.title, brief: existing.brief, scenes: existing.scenes, shots: existing.shots }).slice(0, 120_000)}` : '',
+            `BRIEF:\n${JSON.stringify(input.brief)}`,
+            `Return only JSON matching: ${storyboardSchemaHint()}. Make a shootable storyboard from existing footage, with explicit visual requirements.`,
+          ].filter(Boolean).join('\n\n'),
+        },
+      ], { project });
+      const storyboard = aiStoryboard(project, parseJsonReply(result), input.brief);
+      const saved = await saveStoryboard(project, storyboard, existing.revision);
+      return json(res, 200, { storyboard: saved, source: 'ai' });
+    }
+    if (rest === 'storyboard/match' && req.method === 'POST') {
+      const body = /** @type {{ shotIds?: unknown, topK?: unknown }} */ (await readJson(req) ?? {});
+      const current = readStoryboard(project);
+      /* The query agent is optional: when configured it rewrites a shot into search words, and any
+         failure falls back inside matchStoryboard to the shot's own visual intent. */
+      const planQuery = agentReady('query')
+        ? async (/** @type {any} */ shot, /** @type {string} */ fallback) => {
+          const reply = await callAgent('query', [{
+            role: 'user',
+            content: `SHOT:\n${JSON.stringify({ title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, must: shot.must, avoid: shot.avoid, targetMs: shot.targetMs })}\n\nReturn only JSON: {"queries":["Chinese visual search query"]}.`,
+          }], { project });
+          const parsed = parseJsonReply(reply);
+          const queries = Array.isArray(parsed?.queries)
+            ? parsed.queries.filter((/** @type {unknown} */ item) => typeof item === 'string' && item.trim()).slice(0, 3)
+            : typeof parsed?.query === 'string' && parsed.query.trim() ? [parsed.query] : [];
+          return queries.length ? [...new Set([...queries, fallback])].join(' ').slice(0, 1200) : fallback;
+        }
+        : null;
+      const next = await matchStoryboard(current, project, semanticIndex, body, planQuery);
+      return json(res, 200, { storyboard: await saveStoryboard(project, next, current.revision) });
+    }
+    if (rest === 'storyboard/fill' && req.method === 'POST') {
+      const body = /** @type {{ shotId?: unknown, prompt?: unknown, duration?: unknown }} */ (await readJson(req) ?? {});
+      const current = readStoryboard(project);
+      const shot = current.shots.find((item) => item.id === String(body.shotId));
+      if (!shot) throw new HttpError(404, 'no such shot');
+      if (shot.locked) throw new HttpError(409, 'that shot is locked');
+      const prompt = (typeof body.prompt === 'string' && body.prompt.trim() ? body.prompt.trim() : [shot.visualIntent, shot.title].filter(Boolean).join('，')).slice(0, 1200);
+      if (!prompt) throw new HttpError(400, 'a visual prompt is required');
+      const seconds = Math.max(4, Math.min(30, Math.round((Number(body.duration) || shot.targetMs / 1000 || 5))));
+      const before = new Set((await listFiles(project.path)).files.map((file) => file.path));
+      const out = `storyboard-fill-${shot.id.replace(/[^\w-]/g, '').slice(-12)}-${Date.now().toString(36)}`;
+      try {
+        await runGet(project.path, 'video', { out, prompt, duration: String(seconds), 'aspect-ratio': '16:9' }, { yes: true });
+      } catch (error) {
+        throw new HttpError(409, error instanceof Error ? error.message : String(error));
+      }
+      const after = (await listFiles(project.path)).files;
+      const made = after.find((file) => !before.has(file.path) && /\.(mp4|m4v|mov|webm|mkv)$/i.test(file.path));
+      if (!made) throw new HttpError(502, 'the generation service returned no video file');
+      const candidate = {
+        id: `candidate_generated_${Date.now().toString(36)}`,
+        libraryId: project.id,
+        libraryName: 'Generated',
+        assetId: made.path,
+        path: made.path,
+        name: basename(made.path),
+        kind: 'video',
+        startMs: 0,
+        endMs: Math.max(1000, seconds * 1000),
+        score: 1,
+        thumbUrl: '',
+        origin: /** @type {'generated'} */ ('generated'),
+      };
+      shot.generated = true;
+      shot.match = {
+        state: 'matched',
+        candidates: [candidate, ...shot.match.candidates],
+        selectedId: candidate.id,
+        confidence: 100,
+        query: prompt,
+      };
+      current.updatedAt = Date.now();
+      return json(res, 200, { storyboard: await saveStoryboard(project, current, current.revision), path: made.path });
+    }
+    if (rest === 'storyboard/chat' && req.method === 'POST') {
+      const body = /** @type {{ text?: unknown, selectedIds?: unknown }} */ (await readJson(req) ?? {});
+      const instruction = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!instruction) throw new HttpError(400, 'instruction is required');
+      const current = readStoryboard(project);
+      const selected = Array.isArray(body.selectedIds) ? body.selectedIds.map(String) : [];
+      if (agentReady('director')) {
+        const context = {
+          title: current.title,
+          durationMs: current.brief.durationMs,
+          shots: current.shots.map((shot) => ({
+            id: shot.id,
+            index: shot.order + 1,
+            title: shot.title,
+            narration: shot.narration,
+            visualIntent: shot.visualIntent,
+            targetMs: shot.targetMs,
+            state: shot.match.state,
+            locked: shot.locked,
+          })),
+          selected,
+        };
+        const result = await callAgent('director', [
+          { role: 'user', content: `STORYBOARD:\n${JSON.stringify(context)}\n\nREQUEST:\n${instruction}\n\nReturn only JSON: {"reply":"short Chinese answer","operations":[]}. Allowed operations: setTargetDuration {durationMs}, updateShot {shotId, patch}, deleteShot {shotId}, reorderShots {shotIds}, addShot {sceneId,index,shot}, setMatch {shotId,candidateId}. Never touch a locked shot.` },
+        ], { project });
+        const parsed = parseJsonReply(result);
+        const operations = Array.isArray(parsed?.operations) ? parsed.operations : [];
+        applyOperations(current, operations); // validate before returning a proposal
+        return json(res, 200, {
+          reply: typeof parsed?.reply === 'string' ? parsed.reply : '已生成修改提案。',
+          operations,
+          proposal: { id: `proposal_${Date.now().toString(36)}`, baseRevision: current.revision, source: 'ai' },
+        });
+      }
+      const local = localProposal(current, instruction);
+      return json(res, 200, {
+        reply: local.reply,
+        operations: local.operations,
+        proposal: { id: `proposal_${Date.now().toString(36)}`, baseRevision: current.revision, source: 'local' },
+        ...(local.intent ? { intent: local.intent } : {}),
+      });
+    }
+    if (rest === 'storyboard/apply' && req.method === 'POST') {
+      const body = /** @type {{ baseRevision?: unknown, operations?: unknown }} */ (await readJson(req) ?? {});
+      const current = readStoryboard(project);
+      if (typeof body.baseRevision === 'number' && body.baseRevision !== current.revision) {
+        throw new HttpError(409, 'This storyboard changed in another window. Reload it before applying.', { revision: current.revision });
+      }
+      const next = applyOperations(current, body.operations);
+      return json(res, 200, { storyboard: await saveStoryboard(project, next, current.revision) });
+    }
+    if (rest === 'storyboard/handoff' && req.method === 'POST') {
+      const current = readStoryboard(project);
+      const { clips, gaps } = handoffClips(current);
+      if (!clips.length) throw new HttpError(409, 'no matched shot to make a rough cut from');
+      current.handedOffAt = Date.now();
+      current.roughcut = { createdAt: Date.now(), durationMs: clips.reduce((sum, clip) => sum + clip.durationMs, 0), clips, gaps };
+      return json(res, 200, { storyboard: await saveStoryboard(project, current, current.revision), clips, gaps });
     }
     /* ── subtitles: the film's lines, the person's subtitle style, translation (see captions.mjs) ── */
     if (await captionRoutes(req, res, project.path, rest, { translate: subtitleTranslator, transcribe: await subtitleTranscriber() })) return;

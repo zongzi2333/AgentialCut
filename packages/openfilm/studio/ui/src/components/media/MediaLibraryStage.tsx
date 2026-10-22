@@ -67,7 +67,7 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImp
   const [at, setAt] = React.useState('');
   const [query, setQuery] = React.useState('');
   const [mode, setMode] = React.useState<Mode>('file');
-  const [searchScope, setSearchScope] = React.useState<'project' | 'all' | string>('project');
+  const [searchScope, setSearchScope] = React.useState<'project' | 'global' | string>('project');
   const [shot, setShot] = React.useState<SemanticHit | null>(null);
   const [kind, setKind] = React.useState<KindFilter>('all');
   const [sort, setSort] = React.useState<Sort>('recent');
@@ -103,7 +103,7 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImp
   }, [mode, semantic.clearSearch]);
   React.useEffect(() => {
     const libraries = semantic.status?.libraries ?? [];
-    if (searchScope !== 'project' && searchScope !== 'all' && !libraries.some((library) => library.id === searchScope)) {
+    if (searchScope !== 'project' && searchScope !== 'global' && !libraries.some((library) => library.id === searchScope)) {
       setSearchScope('project');
     }
   }, [semantic.status, searchScope]);
@@ -139,14 +139,14 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImp
   const externalLibraries = semantic.status?.libraries ?? [];
   const searchLibraryIds = searchScope === 'project'
     ? [projectId]
-    : searchScope === 'all'
-      ? [projectId, ...externalLibraries.filter((library) => !library.offline).map((library) => library.id)]
+    : searchScope === 'global'
+      ? undefined
       : [searchScope];
   const scopeLabel = searchScope === 'project'
-    ? t('semanticIndex.projectLibrary')
-    : searchScope === 'all'
-      ? t('semanticIndex.libraries')
-      : externalLibraries.find((library) => library.id === searchScope)?.name ?? t('semanticIndex.projectLibrary');
+    ? '项目文件'
+    : searchScope === 'global'
+      ? '全局向量库'
+      : externalLibraries.find((library) => library.id === searchScope)?.name ?? '项目文件';
   const visualResults = mode === 'visual' && Boolean(semantic.meta || semantic.searching || semantic.searchError);
   const unindexed = React.useMemo(() => {
     const states = semantic.status?.project?.assetStates ?? {};
@@ -577,7 +577,7 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImp
             </button>
           }>
           <div role="menu" className="w-[280px] rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-lg)]">
-            {([['project', t('semanticIndex.projectLibrary')], ['all', t('semanticIndex.libraries')]] as const).map(([value, label]) => (
+            {([['project', '项目文件'], ['global', '全局向量库']] as const).map(([value, label]) => (
               <button key={value} type="button" role="menuitemradio" aria-checked={searchScope === value}
                 onClick={() => { setSearchScope(value); if (value !== 'project') { setMode('visual'); semantic.clearSearch(); } setLibraryOpen(false); }}
                 className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-[var(--bg-hover)]">

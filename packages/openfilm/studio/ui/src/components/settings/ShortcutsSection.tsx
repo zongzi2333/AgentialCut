@@ -141,14 +141,6 @@ export function ShortcutsSection() {
     setDraft((d) => restoreDefaults(d, custom, MAC));
   };
 
-  const cancel = () => {
-    setDraft(saved);
-    setRecording(null);
-    setPending(null);
-    setNotice(null);
-    setError(null);
-  };
-
   const save = async () => {
     setRecording(null);
     setPending(null);
@@ -163,6 +155,14 @@ export function ShortcutsSection() {
       setSaving(false);
     }
   };
+
+  const saveRef = React.useRef(save);
+  saveRef.current = save;
+  React.useEffect(() => {
+    if (!dirty || saving) return undefined;
+    const timer = setTimeout(() => { void saveRef.current(); }, 700);
+    return () => clearTimeout(timer);
+  }, [dirty, saving, draft]);
 
   const actionRows: Row[] = ACTIONS
     .filter((a) => a.tab === tab && (a.id !== 'refer' || studioHost?.refer))
@@ -281,10 +281,7 @@ export function ShortcutsSection() {
       {error ? <p className={`mt-3 ${settingsError}`}>{error}</p> : null}
       <div className="mt-5 flex items-center justify-between gap-3">
         <SettingsButton onClick={restore} disabled={!custom}>{t('settings.shortcuts.restore')}</SettingsButton>
-        <span className="flex gap-2">
-          <SettingsButton onClick={cancel} disabled={!dirty || saving}>{t('settings.shortcuts.cancel')}</SettingsButton>
-          <SettingsButton variant="primary" onClick={() => { void save(); }} disabled={!dirty || saving}>{t('settings.shortcuts.save')}</SettingsButton>
-        </span>
+        <span className="text-[12px] text-[var(--text-faint)]">{saving ? '保存中…' : '修改会自动保存'}</span>
       </div>
     </SettingsPage>
   );
