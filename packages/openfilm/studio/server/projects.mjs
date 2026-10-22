@@ -17,7 +17,7 @@
 import { moveToTrash } from './trash.mjs';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { cp, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { EMPTY_FILM } from './film.mjs';
@@ -483,6 +483,9 @@ export async function moveLibrary(to, { move = false, choose }) {
           await moveToTrash(folder);
         }
       } catch (e) {
+        /* A half-copy left behind by a failed source removal reads as a second project. The source is still there
+           when the move failed, so the copy can go. */
+        if (existsSync(folder) && existsSync(target)) await rm(target, { recursive: true, force: true }).catch(() => {});
         failed.push({ name: basename(folder), error: /** @type {Error} */ (e).message });
         continue;
       }

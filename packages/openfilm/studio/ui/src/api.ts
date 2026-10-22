@@ -89,6 +89,91 @@ export interface StudioPrefs {
 /** Where the projects library is (src/locations.mjs): the folder, its default, whether the person chose it, the free space on its disk, how many projects are in it. */
 export interface StudioLocation { path: string; default: string; chosen: boolean; free: number | null; count: number }
 export interface StudioLocations { projects: StudioLocation }
+
+/** A local model package the semantic index sidecar found (semantic-index.mjs / VideoSeek). */
+export interface SemanticModel {
+  id: string;
+  name: string;
+  provider: string;
+  variant: string;
+  dimension: number;
+  imageSize: number;
+  languages: string[];
+  license?: string;
+  path?: string;
+}
+export interface SemanticStore {
+  id: string;
+  modelId: string;
+  name?: string;
+  provider?: string;
+  dimension?: number;
+  state: 'idle' | 'queued' | 'indexing' | 'ready' | 'partial' | 'error';
+  frames: number;
+  chunks: number;
+  options?: Record<string, unknown>;
+}
+export interface SemanticLibrary {
+  id: string;
+  name: string;
+  kind: 'project' | 'external';
+  mediaRoot: string;
+  indexRoot: string;
+  offline?: boolean;
+  error?: string;
+  assets: { total: number; ready: number; stale: number; missing?: number; error: number; notIndexed: number; unsupported: number; excluded: number };
+  assetStates?: Record<string, string>;
+  stores: SemanticStore[];
+  job: null | { id: string; store_id: string; state: string; progress: number; message?: string | null; error?: string | null; total: number; done: number };
+}
+export interface SemanticSidecar {
+  state: 'off' | 'starting' | 'ready' | 'error';
+  reason?: string;
+  port?: number;
+  python?: string;
+  modelsRoot?: string;
+  videoSeekRoot?: string;
+  models?: number;
+  device?: string;
+  version?: string;
+  ok?: boolean;
+  videoSeek?: boolean;
+  chineseClip?: boolean;
+  frameExtraction?: boolean;
+  chunking?: boolean;
+}
+export interface SemanticStatus {
+  sidecar: SemanticSidecar;
+  project: SemanticLibrary | null;
+  libraries: SemanticLibrary[];
+  models: SemanticModel[];
+}
+export interface SemanticHit {
+  libraryId: string;
+  libraryName: string;
+  storeId: string;
+  modelId: string;
+  providerId?: string;
+  contentKey: string;
+  assetId: string;
+  path: string;
+  name: string;
+  kind: string;
+  size: number;
+  dir: string;
+  startMs: number;
+  endMs: number;
+  anchorMs: number;
+  score: number;
+  rankScore?: number;
+  engine: 'visual';
+  thumbUrl: string;
+  degraded?: string;
+}
+export interface SemanticSearchResponse {
+  hits: SemanticHit[];
+  meta: { returned: number; elapsedMs: number; mode: 'frame' | 'chunk'; storeIds: string[]; modelIds: string[]; indexState: string; degraded?: string };
+}
 /** Said on the window when they change, for what plays by them (the preview's proxies). */
 export const PREFS_EVENT = 'openfilm:prefs';
 /** Said on the window when the library moved, for the Projects list. */
@@ -180,6 +265,28 @@ export const api = {
   takeSaved: (id: string, path: string) => call<{ clip: Record<string, unknown> & { src: string } } | { clips: SavedGroupClip[] } | { path: string }>(
     `${p(id)}/saved/take`, { method: 'POST', json: { path } },
   ),
+  /** the project's semantic index: its status, and its sidecar's models */
+  semanticStatus: (id: string) => call<SemanticStatus>(`${p(id)}/index`),
+  /** Stop and start the index sidecar, letting go of catalogs it holds. */
+  semanticRestart: () => call<{ health: SemanticSidecar }>('index/restart', { method: 'POST', json: {} }).then((r) => r.health),
+  /** Delete one vector store (its vectors) from a project or external library. */
+  semanticDeleteStore: (libraryId: string, storeId: string) => call<object>(`index/libraries/${encodeURIComponent(libraryId)}/index?storeId=${encodeURIComponent(storeId)}`, { method: 'DELETE' }),
+  semanticStart: (id: string, body: { modelId?: string; mode?: string; assetIds?: string[]; folders?: string[] }) => call<{ job: unknown; storeId: string }>(`${p(id)}/index/jobs`, { method: 'POST', json: body }),
+  semanticStartExternal: (libraryId: string, body: { modelId?: string; mode?: string; assetIds?: string[]; folders?: string[] }) => call<{ job: unknown; storeId: string }>('index/jobs', { method: 'POST', json: { ...body, libraryId } }),
+  semanticSearch: (id: string, body: { query: { type: 'text'; text: string } | { type: 'image'; dataUrl: string }; mode?: 'frame' | 'chunk'; topK?: number; libraryIds?: string[]; filters?: Record<string, unknown> }) => call<SemanticSearchResponse>(`${p(id)}/index/search`, { method: 'POST', json: body }),
+  semanticJob: (libraryId: string, jobId: string) => call<{ job: Record<string, unknown>; items: unknown[] }>(`index/jobs/${encodeURIComponent(jobId)}?libraryId=${encodeURIComponent(libraryId)}`),
+  semanticCancel: (libraryId: string, jobId: string) => call<object>(`index/jobs/${encodeURIComponent(jobId)}/cancel?libraryId=${encodeURIComponent(libraryId)}`, { method: 'POST', json: {} }),
+  semanticDelete: (id: string) => call<object>(`${p(id)}/index`, { method: 'DELETE' }),
+  semanticModels: () => call<{ models: SemanticModel[]; health: SemanticSidecar }>('index/models'),
+  semanticImportModel: async (file: File) => {
+    const res = await fetch(`/api/index/models?filename=${encodeURIComponent(file.name)}`, { method: 'PUT', body: file });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(String(body.error ?? `Studio answered ${res.status}`), res.status, body);
+    return body as { model: string; path: string };
+  },
+  semanticLibraries: () => call<{ libraries: { id: string; name: string; path: string; indexRoot: string }[]; health: SemanticSidecar }>('index/libraries'),
+  semanticAddLibrary: (body: { name?: string; path: string; indexRoot?: string }) => call<{ library: { id: string; name: string; path: string; indexRoot: string } }>('index/libraries', { method: 'POST', json: body }).then((r) => r.library),
+  semanticRemoveLibrary: (id: string) => call<object>(`index/libraries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };
 
 /** A clip of a saved group: its track counted from the group's top one, its time in seconds from the group's start. */

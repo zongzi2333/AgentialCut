@@ -5,10 +5,11 @@
  * Under them, the person's custom services, which their agent calls itself (CustomServices).
  */
 import React from 'react';
-import { Check, ChevronDown, ChevronRight } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Database, HardDrive, Upload } from 'lucide-react';
 import { useLanguage, useT } from '@/i18n';
 import { USE_VERBS, couldMake, offered, useProviders, type ProviderVerb, type ProvidersHook } from '@/lib/providers';
 import { Popover } from '@/components/Popover';
+import { api, type SemanticModel } from '@/api';
 import { ProviderMark } from './ProviderMark';
 import { SettingsButton, SettingsGroup, SettingsItem, SettingsPage, settingsError } from './ui';
 import { CustomServices, customProblem } from './CustomServices';
@@ -27,9 +28,52 @@ export function ModelsSection({ onConnect }: { onConnect: () => void }) {
   const hook = useProviders();
   const providers = hook.state;
   const anything = Boolean(providers?.providers.some((p) => p.source));
+  const [semanticModels, setSemanticModels] = React.useState<SemanticModel[]>([]);
+  const importRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    void api.semanticModels().then((result) => setSemanticModels(result.models)).catch(() => {});
+  }, []);
 
   return (
     <SettingsPage note={t('settings.models.desc')}>
+      <SettingsGroup title={t('settings.models.semanticTitle')}>
+        <p className="text-[12.5px] leading-relaxed text-[var(--text-muted)]">{t('settings.models.semanticDesc')}</p>
+        {semanticModels.length ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {semanticModels.map((model) => (
+              <article key={model.id} className="min-w-0 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)] p-3">
+                <div className="flex items-center gap-2">
+                  <Database size={14} className="shrink-0 text-[var(--accent)]" />
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-[var(--text)]" title={model.id}>{model.name}</span>
+                  <span className="rounded-full bg-[var(--surface)] px-1.5 py-[1px] text-[9.5px] text-[var(--text-faint)]">{t('settings.models.installed')}</span>
+                </div>
+                <p className="mt-1.5 text-[10.5px] text-[var(--text-faint)]">
+                  {model.provider} · {model.dimension}d · {model.imageSize}px · {model.languages.join(' / ')}
+                </p>
+                {model.path ? (
+                  <p className="mt-1.5 flex min-w-0 items-start gap-1 text-[10px] text-[var(--text-faint)]" title={model.path}>
+                    <span className="shrink-0">{t('settings.models.storageLocation')}</span>
+                    <HardDrive size={10} className="mt-0.5 shrink-0" />
+                    <span className="min-w-0 flex-1 break-all font-mono leading-snug">{model.path}</span>
+                  </p>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : <p className="text-[12.5px] text-[var(--text-faint)]">{t('settings.models.noSemantic')}</p>}
+        <div className="flex items-center gap-2">
+          <SettingsButton onClick={() => importRef.current?.click()}><Upload size={13} />{t('settings.models.import')}</SettingsButton>
+          <input ref={importRef} type="file" accept=".zip,application/zip" className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (!file) return;
+              void api.semanticImportModel(file).then(() => api.semanticModels()).then((result) => setSemanticModels(result.models)).catch(() => {});
+            }} />
+        </div>
+      </SettingsGroup>
+
       {providers && !anything ? (
         <SettingsGroup>
           <SettingsItem description={t('settings.models.nothing')} title={t('settings.models.goConnect')}
@@ -37,14 +81,61 @@ export function ModelsSection({ onConnect }: { onConnect: () => void }) {
         </SettingsGroup>
       ) : null}
       {providers ? (
-        <SettingsGroup>
+        <SettingsGroup title={t('settings.models.workflowModels')} footnote={t('settings.models.cardsHint')}>
           {USE_VERBS.filter((verb) => offered(providers, verb)).map((verb) => <ModelRow key={verb} verb={verb} hook={hook} onConnect={onConnect} />)}
         </SettingsGroup>
       ) : null}
+      {providers ? <WorkflowModelCards hook={hook} /> : null}
       <CustomServices hook={hook} />
       {/* a custom service's problem is said under its form */}
       {hook.problem && !customProblem(hook) ? <p className={settingsError}>{hook.problem}</p> : null}
     </SettingsPage>
+  );
+}
+
+/** The same choices as cards, grouped by the workflow that uses them. Clicking a card makes it the one for that
+ *  workflow; the compact pickers above stay as the quick control. */
+function WorkflowModelCards({ hook }: { hook: ProvidersHook }) {
+  const t = useT();
+  const state = hook.state;
+  if (!state) return null;
+  const verbs = USE_VERBS.filter((verb) => offered(state, verb));
+  const sections = verbs.map((verb) => ({
+    verb,
+    choices: state.providers.flatMap((provider) => (
+      (provider.source && provider.verbs.includes(verb) || provider.id === state.use[verb])
+        ? (provider.models[verb] ?? []).map((model) => ({ provider, model }))
+        : []
+    )),
+  })).filter((section) => section.choices.length > 0);
+  if (!sections.length) return null;
+  return (
+    <SettingsGroup title={t('settings.models.catalogTitle')}>
+      {sections.map(({ verb, choices }) => {
+        return (
+          <div key={verb} className="border-t border-[var(--border-soft)] pt-3 first:border-t-0 first:pt-0">
+            <h3 className="text-[12.5px] font-medium text-[var(--text)]">{t(`settings.providers.verbs.${verb}`)}</h3>
+            <p className="mt-0.5 text-[11.5px] text-[var(--text-faint)]">{t(`settings.models.about.${verb}`)}</p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {choices.map(({ provider, model }) => {
+                const current = state.use[verb] === provider.id && (state.model[verb] ?? provider.models[verb]?.[0]?.id) === model.id;
+                return (
+                  <button key={`${provider.id}:${model.id}`} type="button" onClick={() => void hook.choose(verb, provider.id, { model: model.id })}
+                    className={`flex min-w-0 items-center gap-2 rounded-[9px] border p-2.5 text-left transition ${current ? 'border-[var(--text-muted)] bg-[var(--surface-2)]' : 'border-[var(--border)] hover:border-[var(--border-strong)]'}`}>
+                    <ProviderMark id={provider.id} size={14} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[11.5px] font-medium text-[var(--text)]">{model.name}</span>
+                      <span className="block truncate text-[10px] text-[var(--text-faint)]">{provider.name}</span>
+                    </span>
+                    {current ? <Check size={13} className="shrink-0 text-[var(--accent)]" /> : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </SettingsGroup>
   );
 }
 

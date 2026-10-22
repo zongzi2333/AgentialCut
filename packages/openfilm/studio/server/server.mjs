@@ -61,6 +61,7 @@ import { LOCATION_KEYS, chooseFolder, locations, usableFolder } from '../../src/
 import { doctor } from '../../src/doctor.mjs';
 import { recentProblems } from '../../src/problems.mjs';
 import { exportDiagnostics } from './diagnostics.mjs';
+import { SemanticIndexService } from './semantic-index.mjs';
 
 /** @typedef {import('./http.mjs').Req} Req @typedef {import('./http.mjs').Res} Res */
 
@@ -108,6 +109,8 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
   const cookieKey = (/** @type {Req} */ req) => (sameKey(cookie(req, COOKIE)) ? cookie(req, COOKIE) : cookie(req, FRAMED));
   key ??= advertise ? studioKey() : randomBytes(24).toString('hex');
   const watchers = createWatchers();
+  /** the local semantic index: process, project/extra roots, model import (semantic-index.mjs) */
+  const semanticIndex = new SemanticIndexService();
   /** questions about spending for the person, in the pages showing a project (see get.mjs) */
   const asks = createAsks({ emit: (root, event) => watchers.emit(root, event), roots: watchers.roots });
   /** the editor pages open right now, and whether each is in sight: `/open` switches them to a project */
@@ -200,6 +203,64 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
 
     authorize(req);
     const parts = path.slice('/api/'.length).split('/').map(decodeURIComponent);
+
+    /* ── semantic index: sidecar, models, extra libraries, jobs (semantic-index.mjs) ── */
+    if (parts[0] === 'index') {
+      if (parts[1] === 'health' && parts.length === 2 && req.method === 'GET') return json(res, 200, await semanticIndex.health());
+      if (parts[1] === 'restart' && parts.length === 2 && req.method === 'POST') return json(res, 200, { health: await semanticIndex.restart() });
+      if (parts[1] === 'models' && parts.length === 2 && req.method === 'GET') return json(res, 200, { models: await semanticIndex.models(), health: await semanticIndex.health() });
+      if (parts[1] === 'models' && parts.length === 2 && req.method === 'PUT') {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > 2 << 30) throw new HttpError(413, 'the model package is larger than 2 GB');
+          chunks.push(chunk);
+        }
+        const filename = basename(url.searchParams.get('filename') || 'model.zip').replace(/[^\w.\-]+/g, '_').slice(0, 120) || 'model.zip';
+        return json(res, 200, await semanticIndex.importModel(Buffer.concat(chunks), filename));
+      }
+      if (parts[1] === 'libraries' && parts.length === 2 && req.method === 'GET') {
+        return json(res, 200, { libraries: semanticIndex.externalLibraries(), health: await semanticIndex.health() });
+      }
+      if (parts[1] === 'libraries' && parts.length === 2 && req.method === 'POST') {
+        return json(res, 200, { library: await semanticIndex.addExternal(/** @type {any} */ (await readJson(req))) });
+      }
+      if (parts[1] === 'libraries' && parts[2] && parts.length === 3 && req.method === 'DELETE') {
+        await semanticIndex.removeExternal(parts[2]);
+        return json(res, 200, {});
+      }
+      if (parts[1] === 'libraries' && parts[2] && parts[3] === 'index' && parts.length === 4 && req.method === 'DELETE') {
+        await semanticIndex.removeStore(parts[2], url.searchParams.get('storeId') || '');
+        return json(res, 200, {});
+      }
+      if (parts[1] === 'jobs' && parts.length === 2 && req.method === 'POST') {
+        const body = /** @type {any} */ (await readJson(req));
+        if (!body?.libraryId) throw new HttpError(400, 'libraryId is required');
+        return json(res, 200, await semanticIndex.startExternalJob(String(body.libraryId), body));
+      }
+      if (parts[1] === 'jobs' && parts[2] && parts.length === 3 && req.method === 'GET') {
+        const libraryId = url.searchParams.get('libraryId');
+        if (!libraryId) throw new HttpError(400, 'libraryId is required');
+        return json(res, 200, await semanticIndex.job(libraryId, parts[2]));
+      }
+      if (parts[1] === 'jobs' && parts[2] && parts[3] === 'cancel' && parts.length === 4 && req.method === 'POST') {
+        const libraryId = url.searchParams.get('libraryId');
+        if (!libraryId) throw new HttpError(400, 'libraryId is required');
+        return json(res, 200, await semanticIndex.cancelJob(libraryId, parts[2]));
+      }
+      if (parts[1] === 'thumb' && parts.length === 2 && req.method === 'GET') {
+        const upstream = await semanticIndex.thumb(url.searchParams);
+        const data = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(200, {
+          'content-type': upstream.headers.get('content-type') || 'image/jpeg',
+          'cache-control': 'private, max-age=3600',
+          'content-length': data.length,
+        });
+        return res.end(data);
+      }
+      throw new HttpError(404, 'no such index route');
+    }
 
     /* stop: another app is taking over this machine's Studio, or `openfilm open` starts it afresh (`whenIdle`: not
        while an export runs or media is made — it would be lost). `pages`: how many were open, to come back */
@@ -386,8 +447,28 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       if (asked != null) {
         try { to = usableFolder(asked); } catch (e) { throw new HttpError(400, /** @type {Error} */ (e).message); }
       }
-      const done = await moveLibrary(to, { move: move === true, choose: (folder) => chooseFolder('projectsFolder', folder) });
-      return json(res, 200, { ...done, locations: locations() });
+      const from = libraryRoot();
+      /* The index sidecar keeps a catalog.sqlite open in each project, and watchers keep a handle on the folder.
+         Windows will not rename either while it is open: close both before the library moves, and keep status calls
+         from opening them again until it is done. */
+      const moving = move === true
+        ? (await listProjects()).filter((p) => p.path === from || p.path.startsWith(`${from}${sep}`))
+        : [];
+      const migrating = moving.length > 0;
+      if (migrating) semanticIndex.beginMigration();
+      try {
+        if (migrating) {
+          if (await semanticIndex.hasActiveJobs(moving.map((p) => p.id))) {
+            throw new HttpError(409, 'Stop the running index job before moving the projects folder.');
+          }
+          await semanticIndex.closeProjectLibraries(moving.map((p) => p.id));
+          watchers.closeUnder(from);
+        }
+        const done = await moveLibrary(to, { move: move === true, choose: (folder) => chooseFolder('projectsFolder', folder) });
+        return json(res, 200, { ...done, locations: locations() });
+      } finally {
+        if (migrating) semanticIndex.endMigration();
+      }
     }
     if (parts[0] === 'locations' && parts[1] === 'projects' && parts.length === 2 && req.method === 'POST') {
       const folder = locations()[parts[1]].path;
@@ -407,7 +488,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     }
     /* the web editor's folder browser (browse.mjs): `path`'s folders, only under the home folder, and where to start */
     if (parts[0] === 'browse' && parts.length === 1 && req.method === 'GET') {
-      const listing = await browseFolder(url.searchParams.get('path'));
+      const listing = await browseFolder(url.searchParams.get('path'), { anywhere: url.searchParams.get('anywhere') === '1' });
       const places = await browsePlaces({ library: libraryRoot(), recent: (await listProjects()).filter((p) => !p.missing).map((p) => p.path) });
       return json(res, 200, { ...listing, ...places });
     }
@@ -552,6 +633,20 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     if (!existsSync(project.path) && !(!rest && req.method === 'DELETE')) {
       throw new HttpError(410, 'This project’s folder is not there any more: it was moved, renamed or deleted.', { code: 'missing' });
     }
+    /* ── the project's semantic index (semantic-index.mjs) ── */
+    if (rest === 'index' && req.method === 'GET') return json(res, 200, await semanticIndex.status(project));
+    if (rest === 'index' && req.method === 'DELETE') {
+      await semanticIndex.removeProjectIndex(project);
+      return json(res, 200, {});
+    }
+    if (rest === 'index/jobs' && req.method === 'POST') {
+      const body = /** @type {any} */ (await readJson(req));
+      return json(res, 200, await semanticIndex.startProjectJob(project, body));
+    }
+    if (rest === 'index/search' && req.method === 'POST') {
+      const body = /** @type {any} */ (await readJson(req, 24 << 20));
+      return json(res, 200, await semanticIndex.search(project, body));
+    }
     /* ── subtitles: the film's lines, the person's subtitle style, translation (see captions.mjs) ── */
     if (await captionRoutes(req, res, project.path, rest, { translate: subtitleTranslator, transcribe: await subtitleTranscriber() })) return;
     /* ── end subtitles ── */
@@ -575,6 +670,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
         if (exports.list(project.id).some((job) => job.status === 'waiting' || job.status === 'running')) {
           throw new HttpError(409, 'An export is queued or running in this project: wait for it to finish or stop it first, then rename the project.', { code: 'export-running' });
         }
+        await semanticIndex.removeProjectLibrary(project);
         const renamed = await renameProject(project.id, String(name ?? ''));
         if (renamed.path !== project.path || renamed.name !== project.name) {
           watchers.move(project.path, renamed.path);
@@ -595,6 +691,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       if (req.method === 'DELETE') {
         /* its files are being written, and its chat is mid-turn: stopped first, by the person */
         if (agentIn(project.path)) throw new HttpError(409, 'An agent is running in this project: stop it first, then delete the project.', { code: 'agent-running' });
+        await semanticIndex.removeProjectLibrary(project);
         await deleteProject(project.id);
         /* every page showing it leaves it (with tabs, its tab closes) */
         watchers.emit(project.path, { type: 'gone' });
@@ -1048,6 +1145,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     if (advertise && advertised()?.pid === process.pid) rmSync(runFile(), { force: true });
     exports.stopAll();
     fetches.stopAll();
+    semanticIndex.stop();
     await closePageFrames();
     watchers.closeAll();
     await pages.close();

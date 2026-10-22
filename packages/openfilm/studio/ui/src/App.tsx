@@ -8,7 +8,7 @@
  * app's to open), `/` is the projects (the window with no tab open), and `openfilm open` is the app's to settle (every
  * tab hears it).
  */
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { api, listen, studioConnection } from './api';
 import { useT } from './i18n';
 import { ProjectView } from './components/ProjectView';
@@ -17,6 +17,7 @@ import { ProjectsPopover } from './components/ProjectsLibrary';
 import { Launcher } from './components/Launcher';
 import { studioHost } from './lib/host';
 import { WhatsNew } from './components/WhatsNew';
+import { SettingsModal, type SettingsSection } from './components/settings/SettingsModal';
 import { sourcesApi } from './lib/project-sources';
 import { LIST_WAIT_MS, within } from './lib/projects-page';
 
@@ -33,11 +34,20 @@ const keepKey = (to: string) => {
 };
 
 const projectIn = (path: string) => /^\/projects\/([\w-]+)/.exec(path)?.[1] ?? null;
+const SECTION_IDS = new Set<SettingsSection>(['general', 'agents', 'providers', 'models', 'vectorStore', 'developer', 'shortcuts', 'advanced']);
+const settingsIn = (path: string): SettingsSection | null => {
+  if (!path.startsWith('/settings')) return null;
+  const asked = path.split('/')[2] as SettingsSection | undefined;
+  return asked && SECTION_IDS.has(asked) ? asked : 'general';
+};
 /** the app's tabs, when Studio is a tab of an app's window */
 const tabs = studioHost?.tabs ?? null;
 
 export function App() {
   const [path, setPath] = useState(location.pathname);
+  const [returnTo, setReturnTo] = useState('/');
+  const [returnProjects, setReturnProjects] = useState(false);
+  const settingsPushed = useRef(false);
   const go = (to: string, replace = false) => {
     if (to !== location.pathname) (replace ? history.replaceState : history.pushState).call(history, null, '', keepKey(to));
     setPath(to);
@@ -63,11 +73,35 @@ export function App() {
   const leave = () => { if (tabs) tabs.report({ gone: true }); else go('/', true); };
 
   const id = projectIn(path);
+  const settingsSection = settingsIn(path);
+  const openSettings = (section: SettingsSection = 'general', options?: { projects?: boolean }) => {
+    if (!settingsIn(location.pathname)) {
+      setReturnTo(location.pathname || '/');
+      setReturnProjects(Boolean(options?.projects));
+      settingsPushed.current = true;
+    }
+    go(`/settings/${section}`);
+  };
+  const closeSettings = () => {
+    /* Settings was pushed over the page it was opened from: going back keeps that page, its scroll and any window
+       it had open, rather than rebuilding whatever happens to be the last project. */
+    if (settingsPushed.current && history.length > 1) {
+      settingsPushed.current = false;
+      history.back();
+      return;
+    }
+    go(returnTo || '/');
+  };
+  /* Once the project page is back, the Projects window it opens is its own again: clear the request after its first
+     render, so a later visit to the same project does not reopen it. */
+  useEffect(() => {
+    if (!settingsSection && returnProjects) setReturnProjects(false);
+  }, [settingsSection, returnProjects]);
   /* no project in the address: the one opened last that is still there, else the Projects window (`none`); with
      tabs, the projects (no tab is open) */
   const [none, setNone] = useState(false);
   useEffect(() => {
-    if (id || tabs) return;
+    if (id || tabs || settingsSection) return;
     let alive = true;
     /* the list not read (refused, or no answer in time): the Projects window, which says so and tries again */
     void within(api.projects(), LIST_WAIT_MS).then((projects) => {
@@ -77,10 +111,14 @@ export function App() {
       else setNone(true);
     }, () => { if (alive) setNone(true); });
     return () => { alive = false; setNone(false); };
-  }, [id]);
+  }, [id, settingsSection]);
 
-  const page = id ? <ProjectView key={id} projectId={id} onProject={open} onLeave={leave} />
-    : tabs ? <Launcher onOpen={open} />
+  const settingsProject = projectIn(returnTo);
+  const page = settingsSection ? (
+    <SettingsModal open section={settingsSection} projectId={settingsProject}
+      onSection={(next) => go(`/settings/${next}`, true)} onClose={closeSettings} />
+  ) : id ? <ProjectView key={id} projectId={id} onProject={open} onLeave={leave} onSettings={openSettings} initialProjectsOpen={!settingsSection && returnProjects} />
+    : tabs ? <Launcher onOpen={open} onSettings={openSettings} />
     : !none ? <BrandLoadingScreen labelKey="projects.opening" />
       : (
         <div className="workspace-shell bg-[var(--dock-shell)]">

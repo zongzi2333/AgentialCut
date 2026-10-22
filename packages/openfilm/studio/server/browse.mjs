@@ -3,6 +3,7 @@
  * The folders under the home folder, for the web editor's "Open folder…" (a browser cannot give a folder's path): one
  * folder's subfolders at a time, each marked when it holds a film.html. Nothing outside the home folder is shown, by
  * any path or link: a link to a folder outside it is left out, and a path that resolves outside it is refused.
+ * `anywhere` is for Settings' project save path, which may be on another disk; the folder is checked before it is used.
  * Hidden folders are left out; a folder this account cannot read is refused, as the system refuses it.
  */
 import { existsSync } from 'node:fs';
@@ -35,18 +36,23 @@ const denied = (e) => ['EACCES', 'EPERM'].includes(/** @type {NodeJS.ErrnoExcept
 /**
  * One folder's subfolders. `path`: a folder under `root` (none: `root` itself). Answers the folder by its real path,
  * its parent (null at the root), whether it holds a film, and its folders, sorted by name.
- * @param {string | null | undefined} path @param {{ root?: string }} [options]
+ * @param {string | null | undefined} path @param {{ root?: string, anywhere?: boolean }} [options]
  */
-export async function browseFolder(path, { root = homedir() } = {}) {
+export async function browseFolder(path, { root = homedir(), anywhere = false } = {}) {
   const top = await realpath(root);
-  const asked = path ? resolve(top, path) : top;
+  const asked = path ? (anywhere ? resolve(path) : resolve(top, path)) : top;
   /** @type {string} */
   let real;
   try { real = await realpath(asked); } catch (e) {
     if (denied(e)) throw new BrowseError('You do not have permission to open this folder.', 403, 'denied');
     throw new BrowseError('That folder does not exist.', 404, 'not-found');
   }
-  if (!within(top, real)) throw new BrowseError('Only folders in your home folder are shown here.', 403, 'outside');
+  /* The folder browser for a project stays under home. Settings' project save path can be on another disk, so it may
+     browse the disk it is on; the server still checks the chosen folder before using it. */
+  const browseTop = anywhere
+    ? (dirname(real) === real ? real : (process.platform === 'win32' ? `${real.slice(0, 2)}\\` : '/'))
+    : top;
+  if (!anywhere && !within(top, real)) throw new BrowseError('Only folders in your home folder are shown here.', 403, 'outside');
   if (!(await stat(real)).isDirectory()) throw new BrowseError('That is a file, not a folder.', 400, 'file');
   /** @type {import('node:fs').Dirent[]} */
   let entries;
@@ -60,17 +66,17 @@ export async function browseFolder(path, { root = homedir() } = {}) {
     if (entry.name.startsWith('.')) continue;
     const at = join(real, entry.name);
     if (entry.isSymbolicLink()) {
-      /* a link is followed only to a folder inside the home folder */
+      /* a link is followed only to a folder inside the browser's root */
       const target = await realpath(at).catch(() => null);
-      if (!target || !within(top, target) || !(await stat(target).then((s) => s.isDirectory(), () => false))) continue;
+      if (!target || !within(browseTop, target) || !(await stat(target).then((s) => s.isDirectory(), () => false))) continue;
     } else if (!entry.isDirectory()) continue;
     folders.push({ name: entry.name, path: at, film: existsSync(join(at, FILM_FILE)) });
   }
   folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   return {
     path: real,
-    root: top,
-    parent: real === top ? null : dirname(real),
+    root: browseTop,
+    parent: real === browseTop ? null : dirname(real),
     name: basename(real),
     film: existsSync(join(real, FILM_FILE)),
     folders: folders.slice(0, MOST),

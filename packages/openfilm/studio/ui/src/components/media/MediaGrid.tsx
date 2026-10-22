@@ -14,7 +14,7 @@ import { Tooltip } from '../Tooltip';
 
 export interface Upload { id: string; name: string; ratio: number; done?: boolean }
 
-export function MediaGrid({ items, folders, at, view, searching, selected, primaryPath, sources, usedSrcs, uploads, onOpenFolder, onSelect, onOpen, onMenu, onClear, onDropFiles, onDropOnFolder }: {
+export function MediaGrid({ items, folders, at, view, searching, selected, primaryPath, sources, usedSrcs, unindexed, uploads, onOpenFolder, onSelect, onOpen, onMenu, onClear, onDropFiles, onDropOnFolder }: {
   items: readonly WorkspaceResource[];
   folders: readonly string[];
   at: string;
@@ -24,6 +24,8 @@ export function MediaGrid({ items, folders, at, view, searching, selected, prima
   primaryPath: string | null;
   sources: MediaSources;
   usedSrcs: readonly string[];
+  /** Visual files the semantic index has not indexed yet. */
+  unindexed: ReadonlySet<string>;
   uploads: readonly Upload[];
   onOpenFolder: (rel: string) => void;
   onSelect: (file: WorkspaceResource, event: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => void;
@@ -37,10 +39,35 @@ export function MediaGrid({ items, folders, at, view, searching, selected, prima
   const t = useT();
   const used = React.useMemo(() => new Set(usedSrcs), [usedSrcs]);
   const [dropping, setDropping] = React.useState(false);
+  const rootRef = React.useRef<HTMLDivElement>(null);
+
+  function navigate(event: React.KeyboardEvent) {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    const target = event.target as Element | null;
+    const card = target?.closest('[data-media-card]');
+    if (!card) return;
+    const cards = [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-media-card]') ?? [])];
+    const index = cards.indexOf(card as HTMLElement);
+    if (index < 0) return;
+    const grid = rootRef.current?.querySelector<HTMLElement>('[data-media-grid]');
+    const columns = view === 'grid' && grid
+      ? Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length)
+      : 1;
+    const delta = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : event.key === 'ArrowUp' ? -columns : columns;
+    const next = cards[index + delta];
+    if (!next) return;
+    event.preventDefault();
+    (next.querySelector<HTMLElement>('button') ?? next).focus();
+    const path = next.getAttribute('data-path');
+    const file = path ? items.find((item) => item.path === path) : null;
+    if (file) onSelect(file, { metaKey: false, ctrlKey: false, shiftKey: false });
+  }
 
   return (
     <div
+      ref={rootRef}
       className="relative flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-3 pb-3"
+      onKeyDown={navigate}
       onClick={(event) => {
         const target = event.target as Element | null;
         if (target?.closest('article, button, a, input, label, [role="separator"]')) return;
@@ -103,17 +130,17 @@ export function MediaGrid({ items, folders, at, view, searching, selected, prima
           <p className="max-w-[360px] text-[11.5px] leading-relaxed text-[var(--text-faint)]">{searching ? t('mediaLibrary.noResultsHint') : t('mediaLibrary.emptyHint')}</p>
         </div>
       ) : view === 'grid' ? (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-x-2.5 gap-y-3.5">
+        <div data-media-grid="" className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-x-2.5 gap-y-3.5">
           {items.map((file) => (
             <Card key={file.path} file={file} selected={selected.has(file.path)} primary={primaryPath === file.path}
-              used={used.has(file.path)} sources={sources} onSelect={onSelect} onOpen={onOpen} onMenu={onMenu} />
+              used={used.has(file.path)} unindexed={unindexed.has(file.path)} sources={sources} onSelect={onSelect} onOpen={onOpen} onMenu={onMenu} />
           ))}
         </div>
       ) : (
         <div className="flex flex-col divide-y divide-[var(--border-soft)]">
           {items.map((file) => (
             <Row key={file.path} file={file} selected={selected.has(file.path)} primary={primaryPath === file.path}
-              used={used.has(file.path)} sources={sources} onSelect={onSelect} onOpen={onOpen} onMenu={onMenu} />
+              used={used.has(file.path)} unindexed={unindexed.has(file.path)} sources={sources} onSelect={onSelect} onOpen={onOpen} onMenu={onMenu} />
           ))}
         </div>
       )}
@@ -135,8 +162,8 @@ function kindText(kind: WorkspaceResource['kind'], t: (path: string) => string):
   return t('mediaLibrary.kindOther');
 }
 
-function Card({ file, selected, primary, used, sources, onSelect, onOpen, onMenu }: {
-  file: WorkspaceResource; selected: boolean; primary: boolean; used: boolean; sources: MediaSources;
+function Card({ file, selected, primary, used, unindexed, sources, onSelect, onOpen, onMenu }: {
+  file: WorkspaceResource; selected: boolean; primary: boolean; used: boolean; unindexed: boolean; sources: MediaSources;
   onSelect: (file: WorkspaceResource, event: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => void;
   onOpen: (file: WorkspaceResource) => void;
   onMenu: (file: WorkspaceResource, x: number, y: number) => void;
@@ -151,14 +178,14 @@ function Card({ file, selected, primary, used, sources, onSelect, onOpen, onMenu
   }, [hover, file.kind]);
 
   return (
-    <article className="group min-w-0">
+    <article className="group min-w-0 outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]" data-media-card="" data-path={file.path} tabIndex={-1}>
       <div className="relative">
         <button
           type="button"
           draggable
           onDragStart={(event) => {
             event.dataTransfer.setData('application/x-openfilm-media', file.path);
-            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.effectAllowed = 'copyMove';
           }}
           onClick={(event) => onSelect(file, event)}
           onDoubleClick={() => onOpen(file)}
@@ -172,12 +199,12 @@ function Card({ file, selected, primary, used, sources, onSelect, onOpen, onMenu
           }`}
         >
           {file.kind === 'mg' && sources.pagePoster?.(file) ? (
-            <img src={sources.pagePoster(file)} alt="" className="absolute inset-0 h-full w-full object-contain" />
+            <img src={sources.pagePoster(file)} alt="" draggable={false} className="absolute inset-0 h-full w-full object-contain" />
           ) : (
             <MediaPreview file={file} sources={sources} />
           )}
           {play ? (
-            <video src={sources.file(file)} muted loop autoPlay playsInline className="absolute inset-0 h-full w-full bg-black object-contain" />
+            <video src={sources.file(file)} muted loop autoPlay playsInline draggable={false} className="absolute inset-0 h-full w-full bg-black object-contain" />
           ) : null}
           {used ? (
             <span className="absolute left-1.5 top-1.5 rounded bg-black/50 px-1 py-[1px] text-[9.5px] leading-4 text-white/90">{t('mediaLibrary.usedShort')}</span>
@@ -191,6 +218,9 @@ function Card({ file, selected, primary, used, sources, onSelect, onOpen, onMenu
             <span className="absolute bottom-1.5 right-1.5 rounded bg-black/45 px-1.5 py-[1px] text-[10px] tabular-nums text-white/90">
               {formatClipDuration(file.durationMs)}
             </span>
+          ) : null}
+          {unindexed ? (
+            <span className="absolute bottom-1.5 left-1.5 rounded bg-black/55 px-1.5 py-[1px] text-[9.5px] leading-4 text-white/85">{t('semanticIndex.unindexedBadge')}</span>
           ) : null}
         </button>
       </div>
@@ -214,15 +244,15 @@ function Card({ file, selected, primary, used, sources, onSelect, onOpen, onMenu
   );
 }
 
-function Row({ file, selected, primary, used, sources, onSelect, onOpen, onMenu }: {
-  file: WorkspaceResource; selected: boolean; primary: boolean; used: boolean; sources: MediaSources;
+function Row({ file, selected, primary, used, unindexed, sources, onSelect, onOpen, onMenu }: {
+  file: WorkspaceResource; selected: boolean; primary: boolean; used: boolean; unindexed: boolean; sources: MediaSources;
   onSelect: (file: WorkspaceResource, event: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => void;
   onOpen: (file: WorkspaceResource) => void;
   onMenu: (file: WorkspaceResource, x: number, y: number) => void;
 }) {
   const t = useT();
   return (
-    <div className={`group flex items-center gap-2.5 py-2 ${selected ? 'bg-[var(--bg-hover)]/40' : ''}`}>
+    <div data-media-card="" data-path={file.path} tabIndex={-1} className={`group flex items-center gap-2.5 py-2 outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${selected ? 'bg-[var(--bg-hover)]/40' : ''}`}>
       <button type="button" onClick={(event) => onSelect(file, event)} onDoubleClick={() => onOpen(file)}
         onContextMenu={(event) => { event.preventDefault(); onMenu(file, event.clientX, event.clientY); }}
         aria-label={file.name}
@@ -237,6 +267,7 @@ function Row({ file, selected, primary, used, sources, onSelect, onOpen, onMenu 
         </p>
       </button>
       <span className="w-[52px] shrink-0 text-right text-[10.5px] tabular-nums text-[var(--text-faint)]">
+        {unindexed ? <span className="mr-1 text-[9.5px] text-[var(--warn)]">{t('semanticIndex.unindexedBadge')}</span> : null}
         {file.durationMs ? formatClipDuration(file.durationMs) : '—'}
       </span>
       <button type="button" aria-label={t('mediaLibrary.more')}

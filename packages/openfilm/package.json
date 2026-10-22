@@ -51,6 +51,7 @@
     "studio/server/**/*.mjs",
     "studio/server/**/*.js",
     "!studio/server/**/*.test.mjs",
+    "studio/index-sidecar/**/*",
     "studio/client.mjs",
     "studio/ui/dist",
     "THIRD_PARTY_NOTICES.md",

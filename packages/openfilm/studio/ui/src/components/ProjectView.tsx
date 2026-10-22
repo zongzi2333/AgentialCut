@@ -7,7 +7,7 @@
  * are written one at a time (see editor/use-film.ts); the agent's writes come in through the folder's events.
  */
 import * as React from 'react';
-import { BookmarkPlus, ClipboardCopy, ClipboardPaste, GalleryVerticalEnd, Layers, LibraryBig, MessageSquarePlus, MonitorDown, Settings2, TriangleAlert, Upload } from 'lucide-react';
+import { BookmarkPlus, ClipboardCopy, ClipboardPaste, GalleryVerticalEnd, Layers, LibraryBig, MessageSquarePlus, Settings2, TriangleAlert, Upload } from 'lucide-react';
 import { applyOps } from '../../../server/ops.mjs';
 import { api, ApiError, PREFS_EVENT, projectEvents, type Clip, type Film, type Listing, type Op, type ProjectFilm, type ProjectSettings } from '@/api';
 import { posterUrl } from './ProjectCover';
@@ -52,9 +52,7 @@ import { canvasFor, fitToCanvas } from '@/lib/canvas-fit';
 import { factsOfProbe, mediaListingOf, resourceKindOf, srcHitsAsset, warmProjectMedia, type MediaListing, type MediaProxy, type MediaResult, type MediaSources, type WorkspaceResource } from '@/lib/workspace-resources';
 import { BrandLoadingScreen } from './BrandLoadingScreen';
 import { BrandLogo } from './BrandLogo';
-import { SettingsModal } from './settings/SettingsModal';
-import { useSettings } from './settings/use-settings';
-import { DesktopDialog } from './DesktopDialog';
+import type { SettingsSection } from './settings/SettingsModal';
 import type { ContextMenuEntry } from './ContextMenu';
 import { studioHost, useHostPanel, type CommunityItem, type HostPanel, type StageBox, type StudioCommand, type StudioRef } from '../lib/host';
 import { clipRef, fileRef, layerRef, markRange, momentRef, rangeRef, regionRef, stillUrl, subtitleRef, trackRef, type ClipFrameSource, type FilmRange } from '@/lib/studio-refs';
@@ -125,7 +123,7 @@ import { isTypingTarget } from './typing-target';
 const PANE = 'relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[7px]';
 /** The files a picture inside a page can be replaced with. */
 const PICTURE_FILE = /\.(png|jpe?g|gif|webp|avif|svg|bmp)$/i;
-/* ⌘ is the modifier on a Mac, Ctrl elsewhere (the editor's keys, lib/timeline-keys) */
+/* �?is the modifier on a Mac, Ctrl elsewhere (the editor's keys, lib/timeline-keys) */
 const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 /** Which the media pane shows, the project's media or Saved: kept while Studio is open, across projects. */
 const MEDIA_SCOPE: { current: 'project' | 'saved' } = { current: 'project' };
@@ -200,16 +198,24 @@ function clipIdAt(film: Film | null, loc: string): string | null {
 /** No subtitles shown (fullscreen's CC off): the same list each time, so nothing renders again for it. */
 const NO_CUES: readonly SubtitleCue[] = [];
 
-export function ProjectView({ projectId, onProject, onLeave }: {
+export function ProjectView({ projectId, onProject, onLeave, onSettings, initialProjectsOpen = false }: {
   projectId: string;
   /** go to another project */
   onProject: (id: string) => void;
   /** this project was taken off the list (or is gone): leave it */
   onLeave: () => void;
+  /** open the settings page on a section; `projects` keeps the Projects window open behind it */
+  onSettings: (section?: SettingsSection, options?: { projects?: boolean }) => void;
+  /** opened from the Projects window: show it again when Settings closes */
+  initialProjectsOpen?: boolean;
 }) {
   const t = useT();
   const toast = useToast();
   const keyHint = useKeyHint();
+  const settingsRef = React.useRef(onSettings);
+  settingsRef.current = onSettings;
+  const projectsOpenRef = React.useRef(false);
+  React.useEffect(() => studioHost?.settings?.onOpen(() => settingsRef.current('general', { projects: projectsOpenRef.current })), []);
   /* the latest onLeave, for the folder's events (subscribed once per project) */
   const leaveRef = React.useRef(onLeave);
   leaveRef.current = onLeave;
@@ -644,7 +650,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
   /* stretches that play late, rendered in the background to play smoothly (editor/use-preview-renders) */
   const { renders: rendersOn, stats: statsOn } = usePreviewPrefs();
   const previewRenders = usePreviewRenders({ projectId, folder, fps: exactRate(projectFps), playing, on: rendersOn, film: film.film, files: filesTick, preview });
-  /* Settings → Developer: how playing goes, in the viewer's corner, said about once a second */
+  /* Settings �?Developer: how playing goes, in the viewer's corner, said about once a second */
   const [played, setPlayed] = React.useState<PlayedReport | null>(null);
   const onPlayed = React.useCallback((report: PlayedReport) => {
     previewRenders.onPlayed(report);
@@ -670,7 +676,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timelineTracks, selectedKeys]);
   const selectedIds = React.useMemo(() => selectedBlocks.map((b) => b.id), [selectedBlocks]);
-  /* the timeline's commands (⌘B, Q / W, ⌥← / →, its switches), for the keys bound here */
+  /* the timeline's commands (⌘B, Q / W, ⌥← / �? its switches), for the keys bound here */
   const timelineCommands = React.useRef<TimelineCommands | null>(null);
   /**
    * The picture has the keyboard (the last press was on it; the inspector and the picture's own bars and menus keep
@@ -1356,7 +1362,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
       onAdd={(file) => void addMedia(file)}
     />
   ));
-  /* the range marked on the timeline (⇧-drag on the ruler, I and O): Studio's, told to the app with the selection */
+  /* the range marked on the timeline (�?drag on the ruler, I and O): Studio's, told to the app with the selection */
   const [markedRange, setMarkedRange] = React.useState<FilmRange | null>(null);
   rangeNowRef.current = markedRange;
   /* the film's stage, for boxes in stage px (film.html's, set below with the picture) */
@@ -1457,7 +1463,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
   hostCommands.current = (command) => {
     if (command.type === 'highlight') { setChatRef(command.ref ?? null); return; }
     if (command.type === 'draft-refs') { setDraftMarks(draftMarksOf(Array.isArray(command.refs) ? command.refs : [])); return; }
-    if (command.type === 'settings') { setSettingsOpen(command.section ?? 'agents'); return; }
+    if (command.type === 'settings') { onSettings(command.section ?? 'agents', { projects: projectsOpenRef.current }); return; }
     if (command.type === 'show-examples') { setExamplesOpen(command.open ?? true); return; }
     if (command.type === 'seek' && Number.isFinite(command.time)) { pause(); seek(command.time * 1000); return; }
     if ((command.type === 'show-range' || command.type === 'show-subtitle') && Number.isFinite(command.start) && Number.isFinite(command.end)) {
@@ -1742,7 +1748,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     if (!loc) { toast.show(t('timeline.editFail')); return; }
     void editBlocks([{ loc, prop: 'props', value: propsAttr(next) }]).then((failed) => { if (failed) toast.show(failed); });
   }, [editBlocks, t]); // eslint-disable-line react-hooks/exhaustive-deps
-  /* a layer made a property of its clip (the inspector's ◇), or no longer one */
+  /* a layer made a property of its clip (the inspector's �?, or no longer one */
   const layerProps = React.useMemo<LayerPropsActions>(() => ({
     list: (element) => clipPropsOf(element.clipId),
     save: (element, next) => writeClipProps(element.clipId, next),
@@ -1911,7 +1917,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     return failed;
   }, [editModel, edit, t, toast]);
   duplicateRef.current = duplicateBlocks;
-  /* a box drawn on the picture with ⌘ held, at the playhead */
+  /* a box drawn on the picture with �?held, at the playhead */
   const referRegion = React.useCallback((region: { box: StageBox; clipIds: string[]; texts: string[] }) => {
     studioHost?.refer?.(regionRef(projectId, timeRef.current, region.box, region, stageRef.current));
   }, [projectId]);
@@ -1973,7 +1979,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     const toMs = thumbView.toMs + span;
     const pictures = blocksRef.current.filter((b) => (b.kind === 'mg' || b.kind === 'video') && b.src && b.endMs > fromMs && b.startMs < toMs);
     /* every clip's own shots are asked for before any shot past a clip's edges: the server shoots them in that order,
-       and until a clip's own arrive its cells borrow the nearest it has (lib/thumb-pick) — a trimmed clip borrowed the
+       and until a clip's own arrive its cells borrow the nearest it has (lib/thumb-pick) �?a trimmed clip borrowed the
        frame from before its in-point, often its source's black first frame */
     const margins: Array<[string, string]> = [];
     for (const b of pictures) {
@@ -2365,7 +2371,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
 
   /*
    * ── keys (lib/keymap, the scheme chosen in Settings; by default): Space plays, J / K / L shuttle, I / O mark a range,
-   * ← / → step a frame (⇧ ten), ↑ / ↓ go from cut to cut, ⌘Z / ⇧⌘Z undo; the timeline's own (⌘B, Q / W, ⌥← / →, N…)
+   * �?/ �?step a frame (�?ten), �?/ �?go from cut to cut, ⌘Z / ⇧⌘Z undo; the timeline's own (⌘B, Q / W, ⌥← / �? N�?
    * through its commands. Not while typing, nor in a dialog. ──
    */
   const tabbed = React.useRef(false);
@@ -2432,7 +2438,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     /* Esc lets the range go as it lets the selection go (those listen on their own); a menu or a panel open takes it */
     if (event.key === 'Escape' && markedRange && !document.querySelector('[role="menu"], [role="listbox"], [data-popover-panel]')) setMarkedRange(null);
     if (!cmd) return;
-    /* a menu or a list open has the arrows; a slider (the ruler, a volume) steps itself with ← / → */
+    /* a menu or a list open has the arrows; a slider (the ruler, a volume) steps itself with �?/ �?*/
     if (el?.closest?.('[role="menu"], [role="listbox"]') && /^(frame|second|prev|next|start|end|nudge)/.test(cmd)) return;
     if (el?.closest?.('[role="slider"]') && /^(frame|second|start|end)/.test(cmd)) return;
     const commands = timelineCommands.current;
@@ -2486,7 +2492,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
       case 'frame-back': case 'frame-forward': case 'jump-back': case 'jump-forward': case 'start': case 'end': {
         if (!(totalMs > 0)) return;
         take();
-        /* a frame (or ten, ⇧) on from the frame the playhead is on, so stepping never drifts */
+        /* a frame (or ten, �? on from the frame the playhead is on, so stepping never drifts */
         const frames = (cmd.endsWith('back') ? -1 : 1) * (cmd.startsWith('jump') ? JUMP_FRAMES : 1);
         const next = cmd === 'start' ? 0 : cmd === 'end' ? totalMs : stepFrames(now, frames);
         pause();
@@ -2627,19 +2633,18 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     try { await api.rename(id, name); return true; }
     catch (e) { renameError(e, name); return false; }
   };
-  const [projectsOpen, setProjectsOpen] = React.useState(false);
+  const [projectsOpen, setProjectsOpen] = React.useState(initialProjectsOpen);
+  projectsOpenRef.current = projectsOpen;
   /* the examples over the film, opened from the app's chat */
   /* the Community over the film: closed, open on its list (true), or on one skill's or example's page */
   const [examplesOpen, setExamplesOpen] = React.useState<boolean | CommunityItem>(false);
-  const [settingsOpen, setSettingsOpen] = useSettings();
   /* making subtitles: what went wrong, shown on the CC button; with no service to transcribe, it opens Providers */
   const [subtitleProblem, setSubtitleProblem] = React.useState<{ text: string; connect: boolean } | null>(null);
   const makeSubtitles = React.useCallback(() => {
-    if (subtitleProblem?.connect) { setSettingsOpen('providers'); setSubtitleProblem(null); return; }
+    if (subtitleProblem?.connect) { onSettings('providers'); setSubtitleProblem(null); return; }
     setSubtitleProblem(null);
     void subs.transcribe().then((r) => { if (!r.ok) setSubtitleProblem({ text: r.error ?? '', connect: !!r.needsTranscriber }); });
   }, [subs, subtitleProblem]);
-  const [desktopOpen, setDesktopOpen] = React.useState(false);
   const headerOpsRef = React.useRef<HTMLDivElement>(null);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [historyAnchor, setHistoryAnchor] = React.useState<{ x: number; y: number } | null>(null);
@@ -2717,18 +2722,10 @@ export function ProjectView({ projectId, onProject, onLeave }: {
           {/* ── top bar: the workflow in the middle, the project's own controls on either side ── */}
           <div data-titlebar className="relative flex h-8 min-w-0 items-center gap-1" style={{ gridArea: 'bar' }}>
             <div aria-hidden className="shrink-0 self-stretch" style={{ width: 'var(--titlebar-logo-x)' }} />
-            {/* first, so the workflow never has to make room for it */}
-            {!studioHost && <Tooltip label={t('desktop.title')} side="bottom">
-              <button type="button" aria-haspopup="dialog" onClick={() => setDesktopOpen(true)}
-                className={`flex h-[26px] shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-[var(--text-dim)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)] ${desktopOpen ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
-                <MonitorDown size={14} />
-                {t('nav.desktop')}
-              </button>
-            </Tooltip>}
             <div className="pointer-events-auto relative flex min-w-0 items-center gap-1">
               <Tooltip label={t('project.appMenu')} side="bottom">
-                <button type="button" aria-label={t('project.appMenu')} aria-haspopup="dialog"
-                  onClick={() => setSettingsOpen('general')}
+                <button type="button" aria-label={t('project.appMenu')}
+                  onClick={() => onSettings('general', { projects: projectsOpen })}
                   className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--text-dim)] transition hover:bg-[var(--bg-hover)]">
                   <BrandLogo size={15} />
                 </button>
@@ -3129,7 +3126,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
                     blockMenuExtra={timelineMenuExtra}
                     chat={timelineChat}
                     {...(hostHover ? { onHoverBlock: hoverBlock } : {})}
-                    /* the range (I / O, ⇧-drag on the ruler, Play range) is Studio's own; referring it is the app's */
+                    /* the range (I / O, �?drag on the ruler, Play range) is Studio's own; referring it is the app's */
                     range={markedRange}
                     onRangeChange={setMarkedRange}
                     trackMenuExtra={trackMenuExtra}
@@ -3199,6 +3196,7 @@ export function ProjectView({ projectId, onProject, onLeave }: {
                 usedSrcs={usedSrcs}
                 onImport={onImport}
                 onMove={onMove}
+                onDelete={onDelete}
                 onReveal={(path) => reveal(path)}
                 onNewFolder={onNewFolder}
                 onExtractAudio={onExtractAudio}
@@ -3250,7 +3248,6 @@ export function ProjectView({ projectId, onProject, onLeave }: {
           /* a film started from an example: in a tab of its own where there are tabs, else here */
           onStarted={(id) => { if (studioHost?.tabs) studioHost.tabs.open(id); else onProject(id); }} />
       ) : null}
-      <SettingsModal open={settingsOpen !== null} section={settingsOpen ?? undefined} onClose={() => setSettingsOpen(null)} />
       {/* the host app's media drawer (panel.assets): over its panel, under Studio's top bar, down to the `bottom` px the
           panel keeps for itself (the panel goes on below it, so the two read as one) */}
       {hostAssets?.open && hostPanel ? <PanelSeam panel={hostPanel} bottom={hostAssets.bottom} /> : null}
@@ -3260,7 +3257,6 @@ export function ProjectView({ projectId, onProject, onLeave }: {
           {mediaPool()}
         </div>
       ) : null}
-      <DesktopDialog open={desktopOpen} onClose={() => setDesktopOpen(false)} />
       <ExportCenter
         open={exportOpen}
         onClose={() => { setExportOpen(false); setExportClipId(null); }}

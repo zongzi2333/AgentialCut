@@ -6,8 +6,7 @@
  * foot of the nav, quietly, where OpenFilm lives: its code, the examples and the website.
  */
 import React from 'react';
-import { createPortal } from 'react-dom';
-import { X, Settings2, Keyboard, Sun, Moon, Monitor, Plug, Boxes, Bot, Search, SquareTerminal, Loader2, SlidersHorizontal } from 'lucide-react';
+import { X, Settings2, Keyboard, Sun, Moon, Monitor, Plug, Boxes, Bot, Search, SquareTerminal, Loader2, SlidersHorizontal, Database } from 'lucide-react';
 import { LANGUAGES, phrasesUnder, useLanguage, useLanguageChoice, useT, type LanguageChoice } from '@/i18n';
 import { studioHost, type HostDeveloper, type HostUpdateState } from '@/lib/host';
 import { showWhatsNew } from '@/lib/whats-new';
@@ -24,13 +23,14 @@ import { ShortcutsSection } from './ShortcutsSection';
 import { SettingsButton, SettingsGroup, SettingsItem, SettingsPage, SettingsSegmented, SettingsSwitch } from './ui';
 import { useThemeMode, type ThemeMode } from './theme';
 import { StorageGroup } from './StorageGroup';
+import { VectorStoreSection } from './VectorStoreSection';
 
-export type SettingsSection = 'general' | 'agents' | 'providers' | 'models' | 'developer' | 'shortcuts' | 'advanced';
+export type SettingsSection = 'general' | 'agents' | 'providers' | 'models' | 'vectorStore' | 'developer' | 'shortcuts' | 'advanced';
 
 /* the nav, in groups: what OpenFilm does, then help (Agents only inside an app with a chat: lib/host.ts `agents`;
    Advanced for what is already set for the best experience; Developer always, for its diagnostics) */
 const NAV: Array<{ group: 'settings' | 'help'; sections: SettingsSection[] }> = [
-  { group: 'settings', sections: ['general', ...(studioHost?.agents ? ['agents' as const] : []), 'providers', 'models'] },
+  { group: 'settings', sections: ['general', ...(studioHost?.agents ? ['agents' as const] : []), 'providers', 'models', 'vectorStore'] },
   { group: 'help', sections: ['shortcuts', 'advanced', 'developer'] },
 ];
 
@@ -46,6 +46,7 @@ const SECTION_ICON: Record<SettingsSection, React.ReactNode> = {
   agents: <Bot size={18} strokeWidth={1.75} />,
   providers: <Plug size={18} strokeWidth={1.75} />,
   models: <Boxes size={18} strokeWidth={1.75} />,
+  vectorStore: <Database size={18} strokeWidth={1.75} />,
   developer: <SquareTerminal size={18} strokeWidth={1.75} />,
   shortcuts: <Keyboard size={18} strokeWidth={1.75} />,
   advanced: <SlidersHorizontal size={18} strokeWidth={1.75} />,
@@ -57,6 +58,7 @@ const SECTION_WORDS: Record<SettingsSection, string | string[]> = {
   agents: 'settings.agents',
   providers: 'settings.providers',
   models: 'settings.models',
+  vectorStore: 'settings.vectorStore',
   developer: ['settings.developer', 'settings.report'],
   shortcuts: 'settings.shortcuts',
   advanced: ['settings.advanced', 'settings.playback'],
@@ -67,21 +69,28 @@ export interface SettingsModalProps {
   onClose: () => void;
   /** Where it opens (General when not given). */
   section?: SettingsSection;
+  /** Keeps the address in step with the section shown. */
+  onSection?: (section: SettingsSection) => void;
+  /** The project whose vector stores are shown. */
+  projectId?: string | null;
 }
 
-/** Opens on General each time, or on the section asked for. */
-export function SettingsModal({ open, onClose, section: opening }: SettingsModalProps) {
+/** Shows on General each time, or on the section asked for. The page owns the whole window: sections are pages,
+ *  not dialogs. */
+export function SettingsModal({ open, onClose, section: opening, onSection, projectId }: SettingsModalProps) {
   const t = useT();
   const language = useLanguage();
   const [section, setSection] = React.useState<SettingsSection>('general');
   const [query, setQuery] = React.useState('');
-  const [shown, setShown] = React.useState(false);
-  const dialog = React.useRef<HTMLDivElement>(null);
   const search = React.useRef<HTMLInputElement>(null);
-  /* the latest onClose without re-running the effect below: the page re-renders every frame while it plays, and
-     re-running it would fade the dialog out and in and take the focus back each time */
+  /* the latest onClose without re-running the effect below */
   const close = React.useRef(onClose);
   close.current = onClose;
+
+  const choose = (id: SettingsSection) => {
+    setSection(id);
+    onSection?.(id);
+  };
 
   React.useEffect(() => { if (open) { setSection(opening ?? 'general'); setQuery(''); } }, [open, opening]);
 
@@ -98,46 +107,21 @@ export function SettingsModal({ open, onClose, section: opening }: SettingsModal
   React.useEffect(() => {
     if (!open) return;
     const previousFocus = document.activeElement as HTMLElement | null;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return;
-      if (e.key === 'Escape') close.current();
-      if (e.key !== 'Tab' || !dialog.current?.contains(document.activeElement)) return;
-      const focusable = Array.from(dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [tabindex="0"]'))
-        .filter((element) => element.getClientRects().length > 0);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
-    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented) close.current(); };
     window.addEventListener('keydown', onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const r = requestAnimationFrame(() => { setShown(true); search.current?.focus(); });
+    const r = requestAnimationFrame(() => search.current?.focus());
     return () => {
       window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prev;
       cancelAnimationFrame(r);
-      setShown(false);
       if (previousFocus?.isConnected) previousFocus.focus();
     };
   }, [open]);
 
   if (!open) return null;
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[10050] grid place-items-center p-6"
-      style={{ background: 'rgba(0,0,0,0.5)', opacity: shown ? 1 : 0, transition: 'opacity 160ms ease' }}
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div
-        ref={dialog}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
-        className="relative flex h-[min(800px,90vh)] w-full max-w-[1120px] overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--dock-pane)] shadow-[0_24px_64px_-12px_rgba(0,0,0,0.5),0_4px_16px_rgba(0,0,0,0.14)]"
-        style={{ opacity: shown ? 1 : 0, transform: shown ? 'scale(1)' : 'scale(0.98)', transition: 'opacity 160ms ease, transform 200ms ease' }}
-      >
+  return (
+    <div className="workspace-shell flex h-[100dvh] min-h-0 w-full flex-col overflow-hidden bg-[var(--dock-shell)]">
+      <div className="flex min-h-0 flex-1 overflow-hidden bg-[var(--dock-pane)]">
         <nav aria-label={t('settings.title')} className="flex w-[264px] shrink-0 flex-col overflow-y-auto border-r border-[var(--border)] px-3 pb-4 pt-3">
           <label className="mb-3 flex h-10 shrink-0 items-center gap-2.5 rounded-[9px] border border-[var(--border)] px-3 text-[var(--text-muted)] transition focus-within:border-[var(--text-muted)]">
             <Search size={17} strokeWidth={1.75} className="shrink-0" aria-hidden />
@@ -160,7 +144,7 @@ export function SettingsModal({ open, onClose, section: opening }: SettingsModal
                     key={id}
                     type="button"
                     aria-current={active ? 'page' : undefined}
-                    onClick={() => setSection(id)}
+                    onClick={() => choose(id)}
                     className={`flex h-10 min-w-0 items-center gap-3 rounded-[8px] px-2.5 text-left text-[15px] transition ${
                       active ? 'bg-[var(--bg-active)] text-[var(--text)]' : 'text-[var(--text-dim)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]'
                     }`}
@@ -180,7 +164,7 @@ export function SettingsModal({ open, onClose, section: opening }: SettingsModal
           </div>
         </nav>
 
-        <div className="relative flex min-w-0 flex-1 flex-col">
+        <main aria-label={t('settings.title')} className="relative flex min-w-0 flex-1 flex-col">
           <button type="button" onClick={onClose} aria-label={t('settings.done')}
             className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-[8px] text-[var(--text-muted)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)]">
             <X size={19} strokeWidth={1.75} />
@@ -190,15 +174,17 @@ export function SettingsModal({ open, onClose, section: opening }: SettingsModal
             {showing === 'general' && <GeneralSection />}
             {showing === 'agents' && <AgentsSection />}
             {showing === 'providers' && <ProvidersSection />}
-            {showing === 'models' && <ModelsSection onConnect={() => { setQuery(''); setSection('providers'); }} />}
+            {showing === 'models' && <ModelsSection onConnect={() => { setQuery(''); choose('providers'); }} />}
+            {showing === 'vectorStore' && (projectId ? <VectorStoreSection projectId={projectId} /> : (
+              <p className="max-w-[560px] text-[14px] leading-relaxed text-[var(--text-muted)]">{t('settings.vectorStore.noProject')}</p>
+            ))}
             {showing === 'developer' && <DeveloperSection />}
             {showing === 'shortcuts' && <ShortcutsSection />}
             {showing === 'advanced' && <AdvancedSection />}
           </div>
-        </div>
+        </main>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
 }
 

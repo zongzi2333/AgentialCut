@@ -108,7 +108,7 @@ export function watchSkills(projectId: string | null | undefined, changed: (skil
 }
 
 export const sourcesApi = {
-  browse: (path?: string | null) => call<BrowseListing>(`browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+  browse: (path?: string | null, anywhere = false) => call<BrowseListing>(`browse${path ? `?path=${encodeURIComponent(path)}` : ''}${anywhere ? `${path ? '&' : '?'}anywhere=1` : ''}`),
   /** opens the folder only when it holds a film: else a SourceError with code 'no-film' (or 'not-found') */
   openExisting: (path: string) => call<{ project: { id: string } }>('projects', 'POST', { path, create: false }).then((r) => r.project),
   startFetch: (url: string) => call<{ job: FetchJob }>('projects/fetch', 'POST', { url }).then((r) => r.job),

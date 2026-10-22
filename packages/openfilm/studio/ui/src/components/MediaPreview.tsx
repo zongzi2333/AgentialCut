@@ -87,11 +87,12 @@ export function MediaPreview({
         <img
           src={shown}
           alt=""
+          draggable={false}
           onError={() => (poster && !failed ? setFailed(true) : setBroken(true))}
           className={IMG}
         />
       ) : thumbable && file.kind === 'video' && shown ? (
-        <img src={shown} alt="" onError={() => setBroken(true)} className={IMG} />
+        <img src={shown} alt="" draggable={false} onError={() => setBroken(true)} className={IMG} />
       ) : file.kind === 'other' ? (
         /* a file Studio does not play (a document, a model, data): its icon and its ending, which say what it is */
         <span className="flex flex-col items-center gap-1">

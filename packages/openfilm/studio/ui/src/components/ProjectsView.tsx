@@ -7,7 +7,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ArrowLeft, Check, ChevronDown, ChevronRight, Clock3, Folder, FolderInput, FolderOpen, FolderPlus, FolderSearch, Github, LayoutGrid, List, MoreHorizontal, Pencil, Plus, Search, SlidersHorizontal, Trash2, Video, X,
+  ArrowLeft, Check, CheckSquare, ChevronDown, ChevronRight, Clock3, Folder, FolderInput, FolderOpen, FolderPlus, FolderSearch, Github, LayoutGrid, List, MoreHorizontal, Pencil, Plus, Search, SlidersHorizontal, Trash2, Video, X,
 } from 'lucide-react';
 import type { Example } from '@/lib/project-sources';
 import { ExamplesSection } from './ProjectSources';
@@ -28,6 +28,8 @@ import { Tooltip } from './Tooltip';
 export type LibraryProject = Project & { poster?: string; duration?: number; createdAt?: number; folderId?: string };
 
 type LibraryViewMode = 'cards' | 'list';
+/** A card press: a plain click previews/opens; Ctrl/Cmd or Shift selects (see ProjectsView's select mode). */
+type OpenEvent = { detail: number; metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean };
 
 export function ProjectsView({
   projects,
@@ -107,6 +109,8 @@ export function ProjectsView({
   const [query, setQuery] = React.useState('');
   const [selecting, setSelecting] = React.useState(false);
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set());
+  /** The card a Shift-click's range starts from (the last one picked). */
+  const lastAnchor = React.useRef<string | null>(null);
   /** The card being renamed in place. One at a time; clicking the cover still opens the project. */
   const [renamingId, setRenamingId] = React.useState<string | null>(null);
   /* folders: the one being looked at (null = all), the project a folder is being picked for, the folder being named */
@@ -133,7 +137,7 @@ export function ProjectsView({
   const posters = React.useMemo(() => folderPosters(projects, folders), [projects, folders]);
 
   /** A card's open: on a click, a key press or its menu, not on the second click of a double-click (lib/projects-page). */
-  const opening = (run: () => void) => (event?: { detail: number }) => { if (!event || opensOnClick(event)) run(); };
+  const opening = (run: () => void) => (event?: OpenEvent) => { if (!event || opensOnClick(event)) run(); };
 
   async function newFolder() {
     const created = await onCreateFolder(t('projects.untitledFolder'), folderId);
@@ -165,6 +169,7 @@ export function ProjectsView({
   const exitSelecting = React.useCallback(() => {
     setSelecting(false);
     setSelectedIds(new Set());
+    lastAnchor.current = null;
   }, []);
 
   /* selected projects left the list (deleted): drop them from the selection; none left → leave select mode, its job
@@ -195,12 +200,35 @@ export function ProjectsView({
   }, [selecting, exitSelecting]);
 
   function toggleSelected(id: string) {
+    lastAnchor.current = id;
     setSelectedIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+  }
+
+  /** Shift-click: every visible project from the last picked one to this one, both included. */
+  function selectRange(id: string) {
+    if (!lastAnchor.current) lastAnchor.current = id;
+    const end = selectableIds.indexOf(id);
+    if (end < 0) return;
+    const start = lastAnchor.current ? selectableIds.indexOf(lastAnchor.current) : end;
+    const [from, to] = start < 0 ? [end, end] : [Math.min(start, end), Math.max(start, end)];
+    setSelecting(true);
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const projectId of selectableIds.slice(from, to + 1)) next.add(projectId);
+      return next;
+    });
+  }
+
+  function beginSelecting() {
+    setRenamingId(null);
+    setSelecting(true);
+    setSelectedIds(new Set());
+    lastAnchor.current = null;
   }
 
   function toggleSelectAllVisible() {
@@ -219,18 +247,33 @@ export function ProjectsView({
     setRenamingId(null);
     setSelecting(true);
     setSelectedIds(new Set([project.id]));
+    lastAnchor.current = project.id;
   }
 
   function itemProps(project: LibraryProject): ItemProps {
     /* With a preview pane: one click picks the project (the pane shows it), a double-click, Enter or the menu opens it.
        The project already open is only picked: opening it again would reload the page for nothing. */
-    const open = onPreview
-      ? (event?: { detail: number }) => {
+    const open = (event?: OpenEvent) => {
+      /* Ctrl/Cmd-click picks one more, Shift-click a run: multi-select works on the cards themselves, not only
+         after choosing "Select" from a menu. A plain click keeps the preview/open behavior. */
+      if (event && (event.metaKey || event.ctrlKey || event.shiftKey)) {
+        if (event.shiftKey) {
+          selectRange(project.id);
+        } else {
+          setSelecting(true);
+          lastAnchor.current = project.id;
+          toggleSelected(project.id);
+        }
+        return;
+      }
+      if (onPreview) {
         if (event && event.detail === 1) { onPreview(project); return; }
         if (project.id === currentId) { onPreview(project); return; }
         onOpen(project);
+        return;
       }
-      : opening(() => onOpen(project));
+      opening(() => onOpen(project))(event);
+    };
     return {
       project,
       title: titleOf(project, t),
@@ -239,7 +282,7 @@ export function ProjectsView({
       current: project.id === currentId,
       previewed: !selecting && project.id === previewId,
       renaming: renamingId === project.id,
-      onToggleSelect: () => toggleSelected(project.id),
+      onToggleSelect: (event?: OpenEvent) => { if (event?.shiftKey) selectRange(project.id); else toggleSelected(project.id); },
       onOpen: open,
       onStartRename: () => { if (!selecting) setRenamingId(project.id); },
       onCommitRename: (name: string) => {
@@ -298,6 +341,19 @@ export function ProjectsView({
                 <ViewButton active={view === 'cards'} label={t('library.viewCards')} onClick={() => setView('cards')} icon={<LayoutGrid size={14} />} />
                 <ViewButton active={view === 'list'} label={t('library.viewList')} onClick={() => setView('list')} icon={<List size={14} />} />
               </div>
+              {/* Multi-select: Ctrl/Cmd-click or Shift-click also enters it from any card. */}
+              <Tooltip label={selecting ? t('library.cancelSelect') : t('library.select')} side="bottom">
+                <button
+                  type="button"
+                  aria-label={selecting ? t('library.cancelSelect') : t('library.select')}
+                  aria-pressed={selecting}
+                  disabled={selectableIds.length === 0}
+                  onClick={() => { if (selecting) exitSelecting(); else beginSelecting(); }}
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition disabled:opacity-40 ${selecting ? 'bg-[var(--surface-3)] text-[var(--text)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]'}`}
+                >
+                  <CheckSquare size={15} strokeWidth={1.9} />
+                </button>
+              </Tooltip>
               {/* at the top level or inside a folder: a folder can hold folders */}
               <Tooltip label={t('projects.newFolder')} side="bottom">
                 <button
@@ -423,8 +479,8 @@ interface ItemProps {
   /** Picked for the page's left pane, not opened. */
   previewed: boolean;
   renaming: boolean;
-  onToggleSelect: () => void;
-  onOpen: (event?: { detail: number }) => void;
+  onToggleSelect: (event?: OpenEvent) => void;
+  onOpen: (event?: OpenEvent) => void;
   onStartRename: () => void;
   onCommitRename: (name: string) => void;
   onCancelRename: () => void;
@@ -494,7 +550,7 @@ function ProjectCardTitle({
   stored: string;
   renaming: boolean;
   size: 'card' | 'list';
-  onOpen: (event?: { detail: number }) => void;
+  onOpen: (event?: OpenEvent) => void;
   /** The project page: double-clicking the name renames it. */
   onRename?: () => void;
   onCommit: (title: string) => void;
@@ -933,7 +989,7 @@ interface FolderItemProps {
   /** its newest projects, up to four, with their covers when they have one */
   posters: { id: string; poster?: string }[];
   renaming: boolean;
-  onOpen: (event?: { detail: number }) => void;
+  onOpen: (event?: OpenEvent) => void;
   onStartRename: () => void;
   onCommitRename: (name: string) => void;
   onCancelRename: () => void;

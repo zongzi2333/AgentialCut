@@ -90,12 +90,15 @@ export function FolderBrowserDialog({
   mode,
   title,
   subtitle,
+  startAt,
   onPick,
   onClose,
 }: {
-  mode: 'open' | 'locate';
+  mode: 'open' | 'locate' | 'choose';
   title: string;
   subtitle?: string;
+  /** Start in this folder, when it is one. */
+  startAt?: string;
   /** `start`: the person chose to start a film in a folder without one */
   onPick: (path: string, start: boolean) => Promise<void>;
   onClose: () => void;
@@ -110,7 +113,7 @@ export function FolderBrowserDialog({
   const go = React.useCallback(async (path?: string | null) => {
     const ask = ++asked.current;
     try {
-      const next = await sourcesApi.browse(path);
+      const next = await sourcesApi.browse(path, mode === 'choose');
       if (ask !== asked.current) return;
       setListing(next);
       setTyped(next.path);
@@ -121,8 +124,8 @@ export function FolderBrowserDialog({
       const key = code === 'outside' ? 'outside' : code === 'denied' ? 'denied' : code === 'not-found' ? 'notFound' : code === 'file' ? 'file' : null;
       setError(key ? t(`projects.browse.error.${key}`) : e instanceof Error ? e.message : String(e));
     }
-  }, [t]);
-  React.useEffect(() => { void go(null); }, [go]);
+  }, [t, mode]);
+  React.useEffect(() => { setTyped(startAt ?? ''); void go(startAt ?? null); }, [go, startAt]);
 
   async function pick(path: string, start: boolean) {
     if (busy || !path.trim()) return;
@@ -141,11 +144,13 @@ export function FolderBrowserDialog({
   /* the home folder itself is never a project (the server refuses it too): only a folder in it */
   const atHome = here != null && here.path === here.root;
   const crumbs = listing ? pathCrumbs(listing.path, listing.root, t('projects.browse.place.home')) : [];
-  const action = mode === 'locate'
-    /* a typed path the browser cannot show (outside the home folder) is still used: the server checks it */
-    ? { label: t('projects.browse.useFolder'), disabled: here ? !here.film : !typed.trim(), start: false }
-    : here && !here.film ? { label: t('projects.browse.startHere'), disabled: atHome, start: true } : { label: t('projects.browse.open'), disabled: !typed.trim() || atHome, start: false };
-  const status = !here || atHome ? null : here.film ? t('projects.browse.hasFilm') : mode === 'locate' ? t('projects.browse.locateNoFilm') : t('projects.browse.noFilm');
+  const action = mode === 'choose'
+    ? { label: t('projects.browse.chooseFolder'), disabled: !typed.trim() || atHome, start: false }
+    : mode === 'locate'
+      /* a typed path the browser cannot show (outside the home folder) is still used: the server checks it */
+      ? { label: t('projects.browse.useFolder'), disabled: here ? !here.film : !typed.trim(), start: false }
+      : here && !here.film ? { label: t('projects.browse.startHere'), disabled: atHome, start: true } : { label: t('projects.browse.open'), disabled: !typed.trim() || atHome, start: false };
+  const status = mode === 'choose' ? null : !here || atHome ? null : here.film ? t('projects.browse.hasFilm') : mode === 'locate' ? t('projects.browse.locateNoFilm') : t('projects.browse.noFilm');
   const place = (id: string) => t(`projects.browse.place.${id}`);
   const lastName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
   const side = (active: boolean) => `flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition ${
@@ -222,7 +227,9 @@ export function FolderBrowserDialog({
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             {!listing ? (
-              <div className="flex h-full items-center justify-center text-[var(--text-muted)]"><Loader2 size={16} className="animate-spin" /></div>
+              <div className="flex h-full items-center justify-center px-6 text-center text-[12.5px] text-[var(--text-faint)]">
+                {error ? t('projects.browse.typePath') : <Loader2 size={16} className="animate-spin" />}
+              </div>
             ) : listing.folders.length === 0 ? (
               <div className="flex h-full items-center justify-center text-[12.5px] text-[var(--text-faint)]">{t('projects.browse.empty')}</div>
             ) : (
@@ -235,9 +242,9 @@ export function FolderBrowserDialog({
                       <span className="shrink-0 rounded-full border border-[var(--border)] px-1.5 text-[10.5px] font-medium text-[var(--text-muted)]">{t('projects.browse.film')}</span>
                     ) : null}
                   </button>
-                  {folder.film ? (
+                  {mode === 'choose' || folder.film ? (
                     <CardButton weight="secondary" disabled={busy} onClick={() => void pick(folder.path, false)} className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100">
-                      {mode === 'locate' ? t('projects.browse.useFolder') : t('projects.browse.open')}
+                      {mode === 'choose' ? t('projects.browse.chooseFolder') : mode === 'locate' ? t('projects.browse.useFolder') : t('projects.browse.open')}
                     </CardButton>
                   ) : (
                     <ChevronRight size={14} className="shrink-0 text-[var(--text-faint)]" />

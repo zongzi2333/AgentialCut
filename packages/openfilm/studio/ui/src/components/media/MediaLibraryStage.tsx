@@ -9,7 +9,7 @@
  */
 import * as React from 'react';
 import {
-  ChevronDown, ChevronRight, EyeOff, Film, FolderKanban, FolderOpen, FolderPlus, Image as ImageIcon, LayoutGrid, List, ListPlus, Lock, Music4, Pencil, RotateCcw, Search, Upload, X,
+  ChevronDown, ChevronRight, Film, FolderKanban, FolderOpen, FolderPlus, Image as ImageIcon, LayoutGrid, List, ListPlus, Lock, Music4, Pencil, Search, Sparkles, Trash2, Upload, X,
 } from 'lucide-react';
 import { useT } from '@/i18n';
 import { keyAction, useKeyHint } from '@/lib/keymap-store';
@@ -26,13 +26,15 @@ import { Tooltip } from '../Tooltip';
 import { MediaGrid, type Upload as UploadRow } from './MediaGrid';
 import { MediaInspector } from './MediaInspector';
 import { MediaBasket } from './MediaBasket';
+import { MediaSearchResults } from './MediaSearchResults';
+import { SemanticIndexPanel } from './SemanticIndexPanel';
 import { loadBasket, saveBasket, sameBasketItem, type BasketItem } from './basket';
-import { loadHidden, saveHidden } from './hidden';
-import { NO_INDEX_STATUS, type MediaIndexStatus } from './search-contract';
+import { useSemanticIndex } from './use-semantic-index';
+import type { SemanticHit } from '@/api';
 
 type KindFilter = 'all' | 'video' | 'image' | 'audio' | 'mg';
 type Sort = 'recent' | 'name' | 'duration' | 'kind';
-type Mode = 'file' | 'visual' | 'dialogue' | 'tags';
+type Mode = 'file' | 'visual';
 
 const KIND_ORDER: KindFilter[] = ['all', 'video', 'image', 'audio', 'mg'];
 const SORTS: Sort[] = ['recent', 'name', 'duration', 'kind'];
@@ -41,15 +43,14 @@ const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1);
 
 let uploadSeq = 0;
 
-export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index = NO_INDEX_STATUS, onImport, onMove, onReveal, onNewFolder, onExtractAudio, onSetCover, onUseInEdit, onAddToTimeline, notify, error }: {
+export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImport, onMove, onDelete, onReveal, onNewFolder, onExtractAudio, onSetCover, onUseInEdit, onAddToTimeline, notify, error }: {
   projectId: string;
   listing: MediaListing | null;
   sources: MediaSources;
   usedSrcs: readonly string[];
-  /** Every engine off until a local indexing service is connected. */
-  index?: MediaIndexStatus;
   onImport: (files: File[], into: string, onProgress: ImportProgress) => Promise<string[]>;
   onMove: (from: string, to: string) => Promise<MediaResult>;
+  onDelete: (path: string) => Promise<MediaResult>;
   onReveal: (path: string) => void;
   onNewFolder: (path: string) => Promise<MediaResult>;
   onExtractAudio: (path: string) => Promise<MediaResult>;
@@ -62,9 +63,12 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
 }) {
   const t = useT();
   const keyHint = useKeyHint();
+  const semantic = useSemanticIndex(projectId);
   const [at, setAt] = React.useState('');
   const [query, setQuery] = React.useState('');
   const [mode, setMode] = React.useState<Mode>('file');
+  const [searchScope, setSearchScope] = React.useState<'project' | 'all' | string>('project');
+  const [shot, setShot] = React.useState<SemanticHit | null>(null);
   const [kind, setKind] = React.useState<KindFilter>('all');
   const [sort, setSort] = React.useState<Sort>('recent');
   const [view, setView] = React.useState<'grid' | 'list'>('grid');
@@ -75,15 +79,15 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
   const [menu, setMenu] = React.useState<{ x: number; y: number; file: WorkspaceResource } | null>(null);
   const [naming, setNaming] = React.useState<{ mode: 'rename'; file: WorkspaceResource } | { mode: 'folder' } | null>(null);
   const [nameDraft, setNameDraft] = React.useState('');
-  const [removing, setRemoving] = React.useState<WorkspaceResource[] | null>(null);
+  const [deleting, setDeleting] = React.useState<WorkspaceResource[] | null>(null);
   const [basket, setBasket] = React.useState<BasketItem[]>(() => loadBasket(projectId));
-  const [hidden, setHidden] = React.useState<string[]>(() => loadHidden(projectId));
-  const [hiddenOpen, setHiddenOpen] = React.useState(false);
   const [adding, setAdding] = React.useState(false);
+  const [basketOver, setBasketOver] = React.useState(false);
   const [libraryOpen, setLibraryOpen] = React.useState(false);
   const [indexOpen, setIndexOpen] = React.useState(false);
   const anchor = React.useRef<string | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const imageInputRef = React.useRef<HTMLInputElement>(null);
   const searchRef = React.useRef<HTMLInputElement>(null);
   const rowRef = React.useRef<HTMLDivElement>(null);
   const bodyRef = React.useRef<HTMLDivElement>(null);
@@ -91,7 +95,18 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
   const { width: basketHeight, commit: commitBasketHeight } = usePaneSize('openfilm.mediaStage.basketH', 88, 88);
 
   React.useEffect(() => { saveBasket(projectId, basket); }, [basket, projectId]);
-  React.useEffect(() => { saveHidden(projectId, hidden); }, [hidden, projectId]);
+  /* files changed on disk (the watcher reloads the listing): the index's picture of them has changed too */
+  React.useEffect(() => { void semantic.refresh(); }, [listing, semantic.refresh]);
+  React.useEffect(() => {
+    semantic.clearSearch();
+    setShot(null);
+  }, [mode, semantic.clearSearch]);
+  React.useEffect(() => {
+    const libraries = semantic.status?.libraries ?? [];
+    if (searchScope !== 'project' && searchScope !== 'all' && !libraries.some((library) => library.id === searchScope)) {
+      setSearchScope('project');
+    }
+  }, [semantic.status, searchScope]);
 
   const all = React.useMemo(() => {
     if (!listing) return [] as WorkspaceResource[];
@@ -101,16 +116,14 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
     return [...byPath.values()];
   }, [listing]);
 
-  const searching = Boolean(query.trim());
-  const hiddenSet = React.useMemo(() => new Set(hidden), [hidden]);
+  const fileSearch = mode === 'file' && Boolean(query.trim());
   const inFolder = React.useMemo(
     () => all.filter((file) => (file.kind === 'mg' ? at === '' : file.dir === at)),
     [all, at],
   );
   const visible = React.useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const found = (searching ? all : inFolder).filter((file) => {
-      if (hiddenSet.has(file.path)) return false;
+    const found = (fileSearch || (mode === 'visual' && !needle) ? all : inFolder).filter((file) => {
       if (kind !== 'all' && file.kind !== kind) return false;
       return !needle || file.name.toLowerCase().includes(needle) || file.path.toLowerCase().includes(needle);
     });
@@ -122,14 +135,29 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
       return (b.addedMs ?? b.mtimeMs) - (a.addedMs ?? a.mtimeMs);
     });
     return sorted;
-  }, [all, inFolder, searching, kind, sort, query, hiddenSet]);
-  const hiddenFiles = React.useMemo(() => all.filter((file) => hiddenSet.has(file.path)), [all, hiddenSet]);
+  }, [all, inFolder, fileSearch, kind, sort, query, mode]);
+  const externalLibraries = semantic.status?.libraries ?? [];
+  const searchLibraryIds = searchScope === 'project'
+    ? [projectId]
+    : searchScope === 'all'
+      ? [projectId, ...externalLibraries.filter((library) => !library.offline).map((library) => library.id)]
+      : [searchScope];
+  const scopeLabel = searchScope === 'project'
+    ? t('semanticIndex.projectLibrary')
+    : searchScope === 'all'
+      ? t('semanticIndex.libraries')
+      : externalLibraries.find((library) => library.id === searchScope)?.name ?? t('semanticIndex.projectLibrary');
+  const visualResults = mode === 'visual' && Boolean(semantic.meta || semantic.searching || semantic.searchError);
+  const unindexed = React.useMemo(() => {
+    const states = semantic.status?.project?.assetStates ?? {};
+    return new Set(Object.entries(states).filter(([path, state]) => state !== 'ready' && all.some((file) => file.path === path && (file.kind === 'video' || file.kind === 'image'))).map(([path]) => path));
+  }, [semantic.status?.project?.assetStates, all]);
 
   const folders = React.useMemo(() => {
-    if (!listing || searching) return [];
+    if (!listing || fileSearch) return [];
     const prefix = at ? `${at}/` : '';
     return listing.dirs.filter((dir) => dir.startsWith(prefix) && !dir.slice(prefix.length).includes('/') && !FONT_DIRS.test(dir));
-  }, [listing, at, searching]);
+  }, [listing, at, fileSearch]);
 
   const primaryFile = React.useMemo(() => all.find((file) => file.path === primary) ?? null, [all, primary]);
   const selectedFiles = React.useMemo(
@@ -164,11 +192,11 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
       if (event.defaultPrevented || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
       const el = event.target instanceof Element ? event.target : null;
       if (el?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
-      if (removing) return;
+      if (deleting) return;
       if (keyAction(event) === 'remove' && (primaryFile || selectedFiles.length)) {
         event.preventDefault();
         event.stopPropagation();
-        setRemoving(selectedFiles.length ? selectedFiles : primaryFile ? [primaryFile] : []);
+        setDeleting(selectedFiles.length ? selectedFiles : primaryFile ? [primaryFile] : []);
         return;
       }
       if (event.key === 'Escape') {
@@ -179,13 +207,14 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [primaryFile, selectedFiles, removing]);
+  }, [primaryFile, selectedFiles, deleting]);
 
   const clearNotice = () => setNotice(null);
   const reserved = (message: string) => setNotice(message);
 
   function select(file: WorkspaceResource, event: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) {
     setNotice(null);
+    setShot(null);
     if (event.shiftKey && anchor.current) {
       const from = visible.findIndex((f) => f.path === anchor.current);
       const to = visible.findIndex((f) => f.path === file.path);
@@ -212,6 +241,7 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
     setQuery('');
     setSelected([]);
     setPrimary(null);
+    setShot(null);
     anchor.current = null;
   }
 
@@ -257,6 +287,9 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
     const entries: ContextMenuEntry[] = [
       { id: 'use', icon: <Film size={14} />, label: t('mediaLibrary.inEdit'), onSelect: () => onUseInEdit(file) },
       { id: 'basket', icon: <ListPlus size={14} />, label: t('mediaLibrary.addToBasket'), onSelect: () => addToBasket([file]) },
+      ...(file.kind === 'video' || file.kind === 'image'
+        ? [{ id: 'index', icon: <Sparkles size={14} />, label: t('semanticIndex.index'), onSelect: () => indexFile(file) }]
+        : []),
       { id: 'sep1', separator: true },
       { id: 'reveal', icon: <FolderOpen size={14} />, label: t('mediaLibrary.reveal'), onSelect: () => onReveal(file.path) },
     ];
@@ -269,7 +302,7 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
     if (file.kind !== 'mg') {
       entries.push({ id: 'sep2', separator: true });
       entries.push({ id: 'rename', icon: <Pencil size={14} />, label: t('mediaLibrary.rename'), onSelect: () => startRename(file) });
-      entries.push({ id: 'remove', icon: <EyeOff size={14} />, label: t('mediaLibrary.removeFromLibrary'), shortcut: keyHint('remove'), danger: true, onSelect: () => setRemoving(selected.includes(file.path) && selected.length > 1 ? selectedFiles : [file]) });
+      entries.push({ id: 'delete', icon: <Trash2 size={14} />, label: t('mediaLibrary.delete'), shortcut: keyHint('remove'), danger: true, onSelect: () => setDeleting(selected.includes(file.path) && selected.length > 1 ? selectedFiles : [file]) });
     }
     return entries;
   };
@@ -315,24 +348,24 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
     else openFolder(rel);
   }
 
-  /* "Removing" only takes the file out of the library's view: the bytes stay in the project folder, so nothing can be
-     lost and no source file outside the project is ever touched. "Removed" puts them back. */
-  function confirmRemove() {
-    const files = removing;
-    setRemoving(null);
+  /* Deleting follows the server's rule: a link loses only its link (the original stays where it is); a copy in the
+     project goes to the system Trash. */
+  async function confirmDelete() {
+    const files = deleting;
+    setDeleting(null);
     if (!files?.length) return;
-    setHidden((cur) => [...new Set([...cur, ...files.map((file) => file.path)])]);
+    let failed = 0;
+    for (const file of files) {
+      // eslint-disable-next-line no-await-in-loop
+      const result = await onDelete(file.path).catch(() => 'failed' as MediaResult);
+      if (result !== 'ok') failed += 1;
+    }
+    if (failed) setNotice(t('mediaLibrary.deleteFailed'));
+    const gone = new Set(files.map((file) => file.path));
+    setBasket((current) => current.filter((item) => !gone.has(item.path)));
     setSelected([]);
     setPrimary(null);
-    anchor.current = null;
-    notify(t('mediaLibrary.removedFromLibrary').replace('{n}', String(files.length)));
-  }
-
-  function restoreHidden(paths: readonly string[]) {
-    if (!paths.length) return;
-    const back = new Set(paths);
-    setHidden((cur) => cur.filter((path) => !back.has(path)));
-    notify(t('mediaLibrary.restoredToLibrary').replace('{n}', String(paths.length)));
+    setShot(null);
   }
 
   async function takeBasketToTimeline() {
@@ -383,19 +416,88 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
     else if (!ranged) setNotice(t('mediaLibrary.basketExportFailed'));
   }
 
-  function addToBasket(files: readonly WorkspaceResource[]) {
+  function addToBasket(files: readonly WorkspaceResource[], range?: { startMs: number; endMs: number }) {
     setBasket((cur) => {
       const next = [...cur];
       for (const file of files) {
-        const item: BasketItem = { path: file.path, name: file.name, kind: file.kind, startMs: 0, endMs: file.durationMs ?? 0 };
+        const item: BasketItem = {
+          path: file.path,
+          name: file.name,
+          kind: file.kind,
+          startMs: range?.startMs ?? 0,
+          endMs: range?.endMs ?? file.durationMs ?? 0,
+        };
         if (!next.some((existing) => sameBasketItem(existing, item))) next.push(item);
       }
       return next;
     });
   }
 
+  function selectHit(hit: SemanticHit) {
+    const file = all.find((candidate) => candidate.path === hit.path);
+    setNotice(null);
+    setShot(hit);
+    if (file) {
+      setPrimary(file.path);
+      setSelected([file.path]);
+      anchor.current = file.path;
+    } else {
+      setPrimary(null);
+      setSelected([]);
+      anchor.current = null;
+    }
+  }
+
+  function addShotToBasket(hit: SemanticHit) {
+    const file = all.find((candidate) => candidate.path === hit.path);
+    if (!file) {
+      setNotice(t('semanticIndex.externalBasket'));
+      return;
+    }
+    addToBasket([file], { startMs: hit.startMs, endMs: hit.endMs });
+    notify(t('semanticIndex.shotAdded'));
+  }
+
+  function runVisualSearch() {
+    const text = query.trim();
+    if (!text) return;
+    setNotice(null);
+    setShot(null);
+    void semantic.search({ type: 'text', text }, 'chunk', searchLibraryIds);
+  }
+
+  function indexFile(file: WorkspaceResource) {
+    if (!indexEnabled) { setNotice(t('semanticIndex.indexUnavailable')); return; }
+    if (!semantic.status?.models.length) { setNotice(t('semanticIndex.noModels')); return; }
+    void semantic.start({ assetIds: [file.path] });
+  }
+
+  function runImageSearch(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') return;
+      setNotice(null);
+      setShot(null);
+      void semantic.search({ type: 'image', dataUrl: reader.result }, 'chunk', searchLibraryIds);
+    };
+    reader.readAsDataURL(file);
+  }
+
   const fileOf = React.useCallback((path: string) => all.find((file) => file.path === path) ?? null, [all]);
   const crumb = at.split('/').filter(Boolean);
+  const indexProject = semantic.status?.project;
+  const indexJob = indexProject?.job;
+  const indexWorking = indexJob?.state === 'queued' || indexJob?.state === 'running';
+  const indexChip = (() => {
+    if (!semantic.status || semantic.status.sidecar.state !== 'ready') return t('semanticIndex.chipOff');
+    if (indexWorking) return t('semanticIndex.chipIndexing').replace('{n}', String(Math.round(indexJob?.progress ?? 0)));
+    if (!indexProject?.stores?.some((store) => store.state === 'ready')) return t('semanticIndex.chipIdle');
+    if (indexProject.assets.total > 0 && indexProject.assets.ready === 0 && (indexProject.assets.missing ?? 0) > 0) return t('semanticIndex.chipNoReady');
+    const pending = (indexProject.assets.stale ?? 0) + (indexProject.assets.notIndexed ?? 0);
+    if (pending) return t('semanticIndex.chipStale').replace('{n}', String(pending));
+    return t('semanticIndex.chipReady');
+  })();
+  const indexEnabled = semantic.status?.sidecar.state === 'ready';
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-[6px] bg-[var(--dock-shell)]">
@@ -408,25 +510,44 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
             ref={searchRef}
             value={query}
             onChange={(event) => { setQuery(event.target.value); setNotice(null); }}
-            onKeyDown={(event) => { if (event.key === 'Escape') { setQuery(''); event.currentTarget.blur(); } }}
-            placeholder={t('mediaLibrary.searchPlaceholder')}
-            aria-label={t('mediaLibrary.searchPlaceholder')}
+            onPaste={(event) => {
+              const file = event.clipboardData.files?.[0];
+              if (file && mode === 'visual' && file.type.startsWith('image/')) { event.preventDefault(); runImageSearch(file); }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') { setQuery(''); event.currentTarget.blur(); }
+              if (event.key === 'Enter' && mode === 'visual') { event.preventDefault(); runVisualSearch(); }
+            }}
+            placeholder={mode === 'visual' ? t('semanticIndex.searchPlaceholder') : t('mediaLibrary.searchPlaceholder')}
+            aria-label={mode === 'visual' ? t('semanticIndex.searchPlaceholder') : t('mediaLibrary.searchPlaceholder')}
             className="h-8 w-full rounded-lg bg-[var(--surface-2)] pl-8 pr-8 text-[12px] text-[var(--text)] outline-none placeholder:text-[var(--text-faint)] focus:ring-1 focus:ring-[var(--border-strong)]"
           />
           {query ? (
-            <button type="button" aria-label={t('mediaLibrary.clearSearch')} onClick={() => setQuery('')}
+            <button type="button" aria-label={t('mediaLibrary.clearSearch')} onClick={() => { setQuery(''); if (mode === 'visual') semantic.clearSearch(); }}
               className="absolute right-2 flex h-5 w-5 items-center justify-center rounded text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]">
               <X size={12} />
             </button>
           ) : null}
         </span>
+        {mode === 'visual' ? (
+          <>
+            <Tooltip label={t('semanticIndex.searchImage')} side="top">
+              <button type="button" aria-label={t('semanticIndex.searchImage')} onClick={() => imageInputRef.current?.click()}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] ring-1 ring-inset ring-[var(--border)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]">
+                <ImageIcon size={14} />
+              </button>
+            </Tooltip>
+            <input ref={imageInputRef} type="file" accept="image/*" className="hidden"
+              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) runImageSearch(file); }} />
+          </>
+        ) : null}
         <div className="flex h-7 shrink-0 items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-[2px]" role="group" aria-label={t('mediaLibrary.searchModes')}>
-          {(['file', 'visual', 'dialogue', 'tags'] as const).map((id) => {
+          {(['file', 'visual'] as const).map((id) => {
             const active = mode === id;
-            const enabled = id === 'file';
+            const enabled = id === 'file' || indexEnabled;
             return (
               <button key={id} type="button" aria-pressed={active}
-                onClick={() => { if (enabled) setMode(id); else reserved(t('mediaLibrary.modeReserved')); }}
+                onClick={() => { if (enabled) { setMode(id); setNotice(null); } else reserved(t('semanticIndex.indexUnavailable')); }}
                 className={`flex h-5 items-center gap-1 rounded-md px-2 text-[11px] transition ${
                   active && enabled ? 'bg-[var(--surface-3)] text-[var(--text)] shadow-[var(--shadow-sm)]' : enabled ? 'text-[var(--text-muted)] hover:text-[var(--text)]' : 'text-[var(--text-faint)]'
                 }`}>
@@ -451,27 +572,38 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
             <button type="button" aria-haspopup="menu" aria-expanded={libraryOpen}
               className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[11.5px] text-[var(--text-muted)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)]">
               <FolderKanban size={13} aria-hidden />
-              <span className="max-w-[150px] truncate">{t('mediaLibrary.library')}</span>
+              <span className="max-w-[150px] truncate">{scopeLabel}</span>
               <ChevronDown size={11} aria-hidden />
             </button>
           }>
-          <div role="menu" className="w-[260px] rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-lg)]">
-            <button type="button" role="menuitemradio" aria-checked="true"
-              className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-[var(--bg-hover)]">
-              <span className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-[3px] border-[var(--text)]" aria-hidden />
-              <span className="min-w-0">
-                <span className="block text-[12px] text-[var(--text)]">{t('mediaLibrary.library')}</span>
-                <span className="mt-0.5 block text-[10.5px] text-[var(--text-faint)]">{t('mediaLibrary.libraryHint')}</span>
-              </span>
-            </button>
-            <button type="button" role="menuitem" disabled
-              className="mt-0.5 flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left opacity-50">
-              <span className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border border-[var(--border-strong)]" aria-hidden />
-              <span className="min-w-0">
-                <span className="block text-[12px] text-[var(--text-muted)]">{t('mediaLibrary.externalLibraries')}</span>
-                <span className="mt-0.5 block text-[10.5px] text-[var(--text-faint)]">{t('mediaLibrary.externalReserved')}</span>
-              </span>
-            </button>
+          <div role="menu" className="w-[280px] rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-lg)]">
+            {([['project', t('semanticIndex.projectLibrary')], ['all', t('semanticIndex.libraries')]] as const).map(([value, label]) => (
+              <button key={value} type="button" role="menuitemradio" aria-checked={searchScope === value}
+                onClick={() => { setSearchScope(value); if (value !== 'project') { setMode('visual'); semantic.clearSearch(); } setLibraryOpen(false); }}
+                className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-[var(--bg-hover)]">
+                <span className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full ${searchScope === value ? 'border-[3px] border-[var(--text)]' : 'border border-[var(--border-strong)]'}`} aria-hidden />
+                <span className="min-w-0">
+                  <span className="block text-[12px] text-[var(--text)]">{label}</span>
+                  {value === 'project' ? <span className="mt-0.5 block text-[10.5px] text-[var(--text-faint)]">{t('mediaLibrary.libraryHint')}</span> : null}
+                </span>
+              </button>
+            ))}
+            {externalLibraries.map((library) => (
+              <button key={library.id} type="button" role="menuitemradio" aria-checked={searchScope === library.id}
+                onClick={() => { setSearchScope(library.id); setMode('visual'); semantic.clearSearch(); setLibraryOpen(false); }}
+                className="mt-0.5 flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-[var(--bg-hover)]">
+                <span className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full ${searchScope === library.id ? 'border-[3px] border-[var(--text)]' : 'border border-[var(--border-strong)]'}`} aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1 text-[12px] text-[var(--text)]"><span className="truncate">{library.name}</span>{library.offline ? <span className="text-[9.5px] text-[var(--text-faint)]">{t('semanticIndex.externalOffline')}</span> : null}</span>
+                  <span className="mt-0.5 block truncate text-[10.5px] text-[var(--text-faint)]">
+                    {library.stores?.[0]?.modelId ?? t('semanticIndex.chipIdle')} · {library.assets?.ready ?? 0}/{library.assets?.total ?? 0}
+                  </span>
+                </span>
+              </button>
+            ))}
+            {!externalLibraries.length ? (
+              <p className="mt-1 border-t border-[var(--border-soft)] px-2 pt-1.5 text-[10.5px] leading-relaxed text-[var(--text-faint)]">{t('semanticIndex.addExternal')}</p>
+            ) : null}
           </div>
         </Popover>
 
@@ -490,40 +622,6 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
           ))}
         </span>
         <span className="shrink-0 text-[10.5px] tabular-nums text-[var(--text-faint)]">{t('mediaLibrary.items').replace('{n}', String(visible.length))}</span>
-        {hiddenFiles.length ? (
-          <Popover open={hiddenOpen} onOpenChange={setHiddenOpen} align="start"
-            trigger={
-              <button type="button" aria-haspopup="dialog" aria-expanded={hiddenOpen}
-                className="flex h-6 shrink-0 items-center gap-1 rounded-md bg-[var(--surface-2)] px-1.5 text-[10.5px] text-[var(--text-faint)] transition hover:text-[var(--text)]">
-                <EyeOff size={11} aria-hidden />
-                {t('mediaLibrary.removedCount').replace('{n}', String(hiddenFiles.length))}
-              </button>
-            }>
-            <div role="dialog" aria-label={t('mediaLibrary.removedTitle')}
-              className="w-[300px] rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)]">
-              <div className="flex items-center gap-2 px-1 py-1">
-                <span className="text-[11.5px] font-medium text-[var(--text)]">{t('mediaLibrary.removedTitle')}</span>
-                <span className="min-w-0 flex-1" />
-                <button type="button" onClick={() => restoreHidden(hiddenFiles.map((file) => file.path))}
-                  className="rounded px-1.5 py-0.5 text-[10.5px] text-[var(--text-muted)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)]">
-                  {t('mediaLibrary.restoreAll')}
-                </button>
-              </div>
-              <p className="px-1 pb-1 text-[10.5px] leading-relaxed text-[var(--text-faint)]">{t('mediaLibrary.removedHint')}</p>
-              <div className="max-h-[220px] overflow-y-auto">
-                {hiddenFiles.map((file) => (
-                  <div key={file.path} className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-[var(--bg-hover)]">
-                    <span className="min-w-0 flex-1 truncate text-[11.5px] text-[var(--text)]">{file.name}</span>
-                    <button type="button" aria-label={t('mediaLibrary.restore')} onClick={() => restoreHidden([file.path])}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--text-faint)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)]">
-                      <RotateCcw size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </Popover>
-        ) : null}
         <span className="min-w-0 flex-1" />
 
         <div className="w-[116px] shrink-0">
@@ -551,11 +649,26 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
           trigger={
             <button type="button" aria-haspopup="dialog" aria-expanded={indexOpen}
               className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] text-[var(--text-faint)] ring-1 ring-inset ring-[var(--border)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)]">
-              <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-[var(--text-faint)]" />
-              {t('mediaLibrary.indexChip')}
+              <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${indexEnabled ? indexWorking ? 'bg-[var(--warn)]' : indexProject?.stores?.some((store) => store.state === 'ready') ? 'bg-[var(--accent)]' : 'bg-[var(--text-faint)]' : 'bg-[var(--err)]'}`} />
+              {indexChip}
             </button>
           }>
-          <IndexPanel index={index} />
+          <SemanticIndexPanel
+            status={semantic.status}
+            error={semantic.error}
+            selectedCount={selected.length}
+            selectedPaths={selected}
+            folder={at ? `assets/${at}` : 'assets'}
+            onStart={semantic.start}
+            onStartExternal={semantic.startExternal}
+            onCancel={semantic.cancel}
+            onRemove={semantic.remove}
+            onAddExternal={semantic.addExternal}
+            onRemoveExternal={semantic.removeExternal}
+            onImportModel={semantic.importModel}
+            onRefresh={semantic.refresh}
+            notify={notify}
+          />
         </Popover>
 
         <Tooltip label={t('mediaLibrary.newFolder')} side="top">
@@ -580,48 +693,93 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
       <div ref={bodyRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div ref={rowRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[7px] bg-[var(--dock-pane)]">
+        {visualResults ? (
+          <MediaSearchResults
+            hits={semantic.hits}
+            meta={semantic.meta}
+            searching={semantic.searching}
+            error={semantic.searchError}
+            selected={shot ? `${shot.assetId}:${shot.startMs}:${shot.endMs}:${shot.storeId}` : null}
+            onSelect={selectHit}
+            onOpen={selectHit}
+          />
+        ) : (
         <MediaGrid
           items={visible}
           folders={folders}
           at={at}
           view={view}
-          searching={searching}
+          searching={fileSearch}
           selected={new Set(selected)}
           primaryPath={primary}
           sources={sources}
           usedSrcs={usedSrcs}
+          unindexed={unindexed}
           uploads={uploads}
           onOpenFolder={openFolder}
           onSelect={select}
           onOpen={onUseInEdit}
           onMenu={openMenu}
-          onClear={() => { setSelected([]); setPrimary(null); anchor.current = null; }}
+          onClear={() => { setSelected([]); setPrimary(null); setShot(null); anchor.current = null; }}
           onDropFiles={(files) => void upload(files)}
           onDropOnFolder={(path, folder) => void moveTo(path, `assets/${folder}/${baseName(path)}`)}
         />
+        )}
         </div>
         <PaneDivider width={inspectorWidth ?? 340} onResize={commitInspectorWidth} containerRef={rowRef}
           label={t('mediaLibrary.resizeInspector')} min={300} minRest={420} side="end" />
         <MediaInspector
           width={inspectorWidth ?? 340}
           file={primaryFile}
+          shot={shot}
           selected={selectedFiles}
           used={Boolean(primary && usedSrcs.includes(primary))}
           sources={sources}
           onAdd={addToBasket}
+          onAddShot={addShotToBasket}
           onUseInEdit={onUseInEdit}
           onReveal={(file) => onReveal(file.path)}
           onExtractAudio={(file) => void extractAudio(file)}
           onSetCover={(file) => onSetCover(file.path)}
-          onRemove={(files) => setRemoving([...files])}
-          onReserved={reserved}
+          onRemove={(files) => setDeleting([...files])}
+          onIndex={(file) => indexFile(file)}
         />
       </div>
 
       <DockPaneDivider height={basketHeight ?? 88} onResize={commitBasketHeight} containerRef={bodyRef}
         label={t('mediaLibrary.resizeBasket')} min={88} minRest={240} />
 
-      <div data-media-basket="" className="shrink-0 overflow-hidden rounded-[7px] bg-[var(--dock-pane)]" style={{ height: basketHeight ?? 88 }}>
+      <div data-media-basket="" className={`shrink-0 overflow-hidden rounded-[7px] bg-[var(--dock-pane)] ${basketOver ? 'ring-1 ring-inset ring-[var(--accent)]' : ''}`} style={{ height: basketHeight ?? 88 }}
+        onDragOver={(event) => {
+          if (!event.dataTransfer.types.includes('application/x-openfilm-media') && !event.dataTransfer.types.includes('application/x-openfilm-shot')) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = 'copy';
+          setBasketOver(true);
+        }}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setBasketOver(false); }}
+        onDrop={(event) => {
+          const path = event.dataTransfer.getData('application/x-openfilm-media');
+          const shot = event.dataTransfer.getData('application/x-openfilm-shot');
+          if (!path && !shot) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setBasketOver(false);
+          let range: { startMs: number; endMs: number } | undefined;
+          let at = path;
+          if (shot) {
+            try {
+              const parsed = JSON.parse(shot) as { path?: unknown; startMs?: unknown; endMs?: unknown };
+              if (typeof parsed.path === 'string') at = parsed.path;
+              if (typeof parsed.startMs === 'number' && typeof parsed.endMs === 'number') range = { startMs: parsed.startMs, endMs: parsed.endMs };
+            } catch { /* a malformed drag: nothing to add */ }
+          }
+          const file = at ? all.find((candidate) => candidate.path === at) : null;
+          if (file) {
+            addToBasket([file], range);
+            notify(t('semanticIndex.shotAdded'));
+          }
+        }}>
       <MediaBasket
         items={basket}
         sources={sources}
@@ -640,17 +798,18 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
       ) : null}
 
       <ConfirmDialog
-        open={removing !== null}
-        title={removing && removing.length > 1
-          ? t('mediaLibrary.removeManyTitle').replace('{n}', String(removing.length))
-          : t('mediaLibrary.removeTitle')}
-        description={removing && removing.length > 1
-          ? t('mediaLibrary.removeManyDesc')
-          : t('mediaLibrary.removeDesc').replace('{name}', removing?.[0]?.name ?? '')}
-        confirmLabel={t('mediaLibrary.removeFromLibrary')}
+        open={deleting !== null}
+        title={deleting && deleting.length > 1
+          ? t('mediaLibrary.deleteManyTitle').replace('{n}', String(deleting.length))
+          : t('mediaLibrary.deleteTitle')}
+        description={deleting && deleting.length > 1
+          ? t('mediaLibrary.deleteManyDesc')
+          : t('mediaLibrary.deleteDesc').replace('{name}', deleting?.[0]?.name ?? '')}
+        confirmLabel={t('mediaLibrary.delete')}
         cancelLabel={t('mediaLibrary.cancel')}
-        onCancel={() => setRemoving(null)}
-        onConfirm={confirmRemove}
+        danger
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => void confirmDelete()}
       />
 
       {naming ? (
@@ -685,35 +844,6 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, index
           </div>
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function IndexPanel({ index }: { index: MediaIndexStatus }) {
-  const t = useT();
-  return (
-    <div className="w-[320px] rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 shadow-[var(--shadow-lg)]" role="dialog" aria-label={t('mediaLibrary.indexTitle')}>
-      <div className="flex items-center gap-2">
-        <span className="text-[12px] font-medium text-[var(--text)]">{t('mediaLibrary.indexTitle')}</span>
-        <span className="min-w-0 flex-1" />
-        <span className="rounded-full border border-[var(--border)] px-1.5 py-[1px] text-[10px] text-[var(--text-faint)]">{t('mediaLibrary.indexOff')}</span>
-      </div>
-      <p className="mt-1 text-[10.5px] leading-relaxed text-[var(--text-faint)]">{t('mediaLibrary.indexReserved')}</p>
-      <div className="mt-2 flex flex-col gap-1">
-        {(['visual', 'dialogue', 'tags'] as const).map((engine) => (
-          <div key={engine} className="flex h-7 items-center gap-2 rounded-md bg-[var(--surface-2)] px-2 text-[11.5px]">
-            <span className="min-w-0 flex-1 truncate text-[var(--text-muted)]">{t(`mediaLibrary.engine${engine === 'visual' ? 'Visual' : engine === 'dialogue' ? 'Dialogue' : 'Tags'}`)}</span>
-            <span className="text-[10px] text-[var(--text-faint)]">{index.engines[engine].state === 'off' ? t('mediaLibrary.indexOff') : index.engines[engine].state}</span>
-          </div>
-        ))}
-      </div>
-      <div className="mt-2 flex items-center gap-1.5 text-[10.5px] text-[var(--text-faint)]">
-        <span className="h-1.5 w-1.5 rounded-full bg-[var(--text-faint)]" aria-hidden />
-        {t('mediaLibrary.deviceReserved')}
-      </div>
-      <button type="button" disabled className="mt-2 flex h-7 w-full items-center justify-center rounded-md bg-[var(--text)] text-[11.5px] font-medium text-[var(--panel)] opacity-40">
-        {t('mediaLibrary.buildIndex')}
-      </button>
     </div>
   );
 }

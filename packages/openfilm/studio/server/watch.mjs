@@ -5,7 +5,7 @@
  * the last one leaves. Studio's own folders and the usual build and dependency folders are not watched.
  */
 import { existsSync, readdirSync, watch } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { readProjectFilm } from './film.mjs';
 import { FILM_FILE } from '../../src/film-doc.mjs';
 
@@ -168,6 +168,15 @@ export function createWatchers() {
     },
     /** The projects someone is watching now. */
     roots: () => [...byRoot.keys()],
+    /** Close the watchers of a folder and its projects (a library being moved as a whole). */
+    closeUnder(/** @type {string} */ root) {
+      for (const [at, entry] of byRoot) {
+        if (at === root || at.startsWith(`${root}${sep}`)) {
+          entry.close();
+          byRoot.delete(at);
+        }
+      }
+    },
     /** Tell everyone watching `root` something the folder itself does not say (a new version in its history). */
     emit(/** @type {string} */ root, /** @type {FolderEvent} */ event) { for (const { listener } of byRoot.get(root)?.listeners ?? []) listener(event); },
     closeAll() { for (const entry of byRoot.values()) entry.close(); byRoot.clear(); },

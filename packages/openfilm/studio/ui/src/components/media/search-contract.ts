@@ -1,97 +1,116 @@
 /**
- * The contract the media library is built against, before any index service exists.
+ * The contract between the media library, Studio's index service, and the local sidecar.
  *
- * The library itself (import, browse, preview, properties) needs none of this. Search does: a local sidecar
- * (ONNX encoders, a vector store, OCR/tag indexes — the same model families VideoSeek uses) answers these shapes, and
- * Studio's server proxies it. The page renders the states below even while every engine is `off`, so wiring the
- * service later changes data, not layout.
+ * A media library is a set of files. A vector store (IndexStore) is one model's index for one
+ * library; it never holds two models. Different stores are queried separately; their results may
+ * be fused by rank, never by mixing vectors.
  *
- * Nothing here performs a request yet; the types are what the UI and the future sidecar agree on.
+ * P1 implements the visual engine only. Dialogue and tags are named for the future and are not
+ * shown in the page.
  */
-
 export type MediaSearchKind = 'visual' | 'dialogue' | 'tags';
 export type MediaSearchMode = 'frame' | 'chunk';
-export type SearchIndexState = 'off' | 'idle' | 'indexing' | 'stale' | 'error';
+export type IndexState = 'off' | 'idle' | 'queued' | 'indexing' | 'ready' | 'stale' | 'partial' | 'error' | 'missing';
 
 export interface EncodingModel {
   id: string;
-  /** openai-clip | chinese-clip | siglip2 (the families VideoSeek ships), base or large */
-  family: string;
-  variant: string;
-  /** the vector's width; a collection is keyed by model and width */
+  name: string;
+  /** local-onnx or remote-http; one store is one model and one provider. */
+  provider: string;
+  kind: 'local-onnx' | 'remote-http';
+  modelVersion: string;
   dimension: number;
-  metric: 'cosine';
-  /** what the vectors mean together, versioned: a change invalidates the collection */
-  embeddingSpace: string;
-  bytes?: number;
+  imageSize: number;
+  languages: string[];
   license?: string;
+  /** frames and chunks both come from this model; a store is invalid if either tower is absent. */
+  capabilities: { text: boolean; image: boolean; video?: boolean };
 }
 
-export interface IndexEngineStatus {
-  engine: MediaSearchKind;
-  /** absent while the engine is off (no model chosen, or the sidecar is not installed) */
-  model?: EncodingModel;
-  state: SearchIndexState;
+export interface IndexStore {
+  id: string;
+  libraryId: string;
+  modelId: string;
+  state: IndexState;
   indexedAssets: number;
-  /** frames for visual, cues for dialogue, chunks for tags */
   indexedUnits: number;
   progress?: number;
   lastError?: string;
 }
 
-export interface MediaIndexStatus {
-  ready: boolean;
-  engines: Record<MediaSearchKind, IndexEngineStatus>;
-  device: 'gpu' | 'cpu' | 'auto';
-  queue: { pending: number; running?: { jobId: string; assetId?: string; progress: number } };
-  /** libraries the sidecar knows: the project's, and any external folder added to it */
-  libraries: MediaLibraryRef[];
-}
-
-export interface MediaLibraryRef {
+export interface IndexLibrary {
   id: string;
   name: string;
-  path: string;
   kind: 'project' | 'external';
-  assetCount?: number;
-  indexState?: SearchIndexState;
+  mediaRoot: string;
+  indexRoot: string;
+  assets: {
+    total: number;
+    ready: number;
+    stale: number;
+    missing: number;
+    notIndexed: number;
+    error: number;
+  };
+  stores: IndexStore[];
+  job?: MediaIndexJob | null;
+  offline?: boolean;
+  /** Per-file state (`ready`, `stale`, `missing`, `not-indexed`), when the index gives it. */
+  assetStates?: Record<string, string>;
+}
+
+export interface MediaIndexStatus {
+  ready: boolean;
+  sidecar: { state: 'off' | 'starting' | 'ready' | 'error'; reason?: string; device?: string };
+  project: IndexLibrary | null;
+  libraries: IndexLibrary[];
+  models: EncodingModel[];
 }
 
 export interface MediaSearchRequest {
-  libraryId?: string;
+  libraryIds: string[];
+  /** Optional: only these stores; otherwise each library's default store. */
+  storeIds?: string[];
   query:
     | { type: 'text'; text: string }
     | { type: 'image'; dataUrl: string }
     | { type: 'vector'; vector: number[] };
   kinds?: MediaSearchKind[];
   mode?: MediaSearchMode;
-  scope?: { assetIds?: string[]; folders?: string[] };
-  filters?: {
-    kinds?: string[];
-    minDurationMs?: number;
-    maxDurationMs?: number;
-    /** only assets the given engine has indexed, or only those it has not */
-    indexed?: 'any' | MediaSearchKind | 'none';
-  };
   topK?: number;
   minScore?: number;
-  /** several queries fused with RRF (video search's "enhance") */
-  enhance?: boolean;
-  /** image queries only */
-  precision?: 'fast' | 'precise';
+  filters?: {
+    kinds?: string[];
+    folder?: string;
+    minDurationMs?: number;
+    maxDurationMs?: number;
+  };
+  /** Fuse stores with reciprocal-rank fusion; raw scores from different models are incomparable. */
+  fusion?: 'none' | 'rrf';
 }
 
 export interface MediaSearchHit {
+  libraryId: string;
+  libraryName?: string;
+  storeId: string;
+  modelId: string;
+  providerId?: string;
+  contentKey: string;
   assetId: string;
-  libraryId?: string;
   path: string;
+  name: string;
+  kind?: string;
   startMs: number;
   endMs: number;
+  anchorMs: number;
+  /** score within this store */
   score: number;
-  kind: MediaSearchKind;
-  matchedText?: string;
-  anchorMs?: number;
+  /** rank after RRF when several stores were searched */
+  rankScore?: number;
+  engine: MediaSearchKind;
   thumbUrl?: string;
+  matchedText?: string;
+  degraded?: string;
 }
 
 export interface MediaSearchResponse {
@@ -100,9 +119,9 @@ export interface MediaSearchResponse {
     returned: number;
     elapsedMs: number;
     mode: MediaSearchMode;
-    model?: string;
-    indexState: 'ready' | 'indexing' | 'stale';
-    /** set when the answer is partial: indexing in progress, an engine failed, a timeout was shortened */
+    storeIds: string[];
+    modelIds: string[];
+    indexState: 'ready' | 'partial';
     degraded?: string;
   };
 }
@@ -110,21 +129,40 @@ export interface MediaSearchResponse {
 export interface MediaIndexJob {
   id: string;
   libraryId: string;
-  assetIds: string[];
-  engines: MediaSearchKind[];
+  storeId: string;
+  mode: 'new' | 'update' | 'rebuild';
   state: 'queued' | 'running' | 'done' | 'cancelled' | 'error';
   progress: number;
+  done: number;
+  total: number;
+  message?: string;
+  error?: string;
 }
 
-/** What the page shows while no sidecar is connected: every engine off, nothing indexed. */
+/** What Studio's server and the sidecar agree on (the sidecar adds its HTTP envelope). */
+export interface SemanticIndexDriver {
+  health(): Promise<{ state: string; device?: string; reason?: string }>;
+  models(): Promise<EncodingModel[]>;
+  registerLibrary(library: IndexLibrary): Promise<IndexLibrary>;
+  reconcileLibrary(library: IndexLibrary, assets: readonly unknown[]): Promise<IndexLibrary>;
+  startJob(request: {
+    libraryId: string;
+    storeId?: string;
+    modelId: string;
+    mode: MediaIndexJob['mode'];
+    assets: readonly unknown[];
+  }): Promise<{ job: MediaIndexJob; storeId: string }>;
+  job(libraryId: string, jobId: string): Promise<MediaIndexJob>;
+  cancel(libraryId: string, jobId: string): Promise<void>;
+  removeIndex(libraryId: string, storeId?: string): Promise<void>;
+  search(request: MediaSearchRequest): Promise<MediaSearchResponse>;
+}
+
+/** The page's state while no sidecar is installed. */
 export const NO_INDEX_STATUS: MediaIndexStatus = {
   ready: false,
-  engines: {
-    visual: { engine: 'visual', state: 'off', indexedAssets: 0, indexedUnits: 0 },
-    dialogue: { engine: 'dialogue', state: 'off', indexedAssets: 0, indexedUnits: 0 },
-    tags: { engine: 'tags', state: 'off', indexedAssets: 0, indexedUnits: 0 },
-  },
-  device: 'auto',
-  queue: { pending: 0 },
+  sidecar: { state: 'off' },
+  project: null,
   libraries: [],
+  models: [],
 };

@@ -119,7 +119,7 @@ const restart = (/** @type {string | null} */ file) => {
     else { old.once('exit', () => { server = run(['studio/server/main.mjs']); }); old.kill(); }
   }, 200);
 };
-for (const dir of ['studio/server', 'src']) watch(join(ROOT, dir), { recursive: true }, (_, file) => restart(file && `${dir}/${file}`));
+for (const dir of ['studio/server', 'studio/index-sidecar', 'src']) watch(join(ROOT, dir), { recursive: true }, (_, file) => restart(file && `${dir}/${file}`));
 
 /* once Studio says where it listens (run.json), open the sample in it */
 const runFile = join(env.OPENFILM_HOME, 'run.json');
