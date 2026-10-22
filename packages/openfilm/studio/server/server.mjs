@@ -823,6 +823,15 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     if (rest === 'media' && req.method === 'GET') {
       const at = url.searchParams.get('path') ?? '';
       const what = url.searchParams.get('what');
+      /* the file itself, to save (the media library's "export shots"): streamed as it is, not read into memory */
+      if (what === 'file') {
+        const abs = readable(project.path, at);
+        const name = basename(abs);
+        const fallback = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+        const rfc = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+        res.setHeader('content-disposition', `attachment; filename="${fallback}"; filename*=UTF-8''${rfc}`);
+        return sendMedia(req, res, abs);
+      }
       /* a web page says its own length and size (none: it has no end) */
       if (what === 'probe' && isPage(at)) {
         return json(res, 200, await pageFacts(project.path, pages.folderUrl(project), at).catch((e) => {

@@ -100,6 +100,7 @@ import { ProjectStage } from './workflow/ProjectStage';
 import { RoughCutStage } from './workflow/RoughCutStage';
 import { SoundStage } from './workflow/SoundStage';
 import { WorkflowBar, type WorkflowStage } from './workflow/WorkflowBar';
+import { MediaLibraryStage } from './media/MediaLibraryStage';
 import { FilmStageSelect, type FilmStageControl, type LayerGeometry, type StageClipEdit, type StagePick } from './FilmStageSelect';
 import { openSection } from './inspector-fields';
 import { FontScopeContext, type FontScope } from '@/lib/use-fonts';
@@ -376,6 +377,11 @@ export function ProjectView({ projectId, onProject, onLeave }: {
   const listing = React.useMemo<MediaListing | null>(
     () => (rawListing ? mediaListingOf(rawListing, (path) => ({ ...facts.get(path), ...(proxies[path] ? { proxy: proxies[path] } : {}) }), (rawListing as { made?: string[] }).made) : null),
     [rawListing, facts, proxies],
+  );
+  /* every file the media library shows, pages included: the basket finds its items here */
+  const allFiles = React.useMemo<readonly WorkspaceResource[]>(
+    () => (listing ? [...listing.files, ...listing.pages] : []),
+    [listing],
   );
   React.useEffect(() => { if (listing) warmProjectMedia(projectId, listing, mediaSources); }, [projectId, listing, mediaSources]);
   /* a file of the media pane as a reference: shown by its poster (a video, a page) or itself (a still, on Studio's
@@ -1099,19 +1105,20 @@ export function ProjectView({ projectId, onProject, onLeave }: {
    * playhead on the targeted track, else at the end of the lowest picture track), the source viewer's
    * `,` and `.` (insert or overwrite the part marked, at the playhead; the playhead then goes to its end).
    */
-  const addMedia = React.useCallback(async (file: WorkspaceResource, how: { mode?: EditMode; range?: SourceRange | null; atPlayhead?: boolean } = {}) => {
-    const target = timelineCommands.current?.target() ?? null;
-    const at = how.atPlayhead || target != null ? snapToFrame(timeRef.current) : 'end';
+  const addMedia = React.useCallback(async (file: WorkspaceResource, how: { mode?: EditMode; range?: SourceRange | null; atPlayhead?: boolean; atEnd?: boolean } = {}) => {
+    const target = how.atEnd ? null : timelineCommands.current?.target() ?? null;
+    const at = how.atEnd ? 'end' : how.atPlayhead || target != null ? snapToFrame(timeRef.current) : 'end';
     const plan = placeMedia(editModel(), { file, range: how.range ?? null, target, at, ...(how.mode ? { mode: how.mode } : {}), ...switchesOf(readTimelinePrefs()), stage: stageRef.current });
-    if ('error' in plan) { toast.show(plan.error === 'locked' ? t('timeline.trackLocked') : t('timeline.dropNotClip')); return; }
+    if ('error' in plan) { toast.show(plan.error === 'locked' ? t('timeline.trackLocked') : t('timeline.dropNotClip')); return false; }
     const failed = await edit(plan.ops, 'history.stepDrop');
-    if (failed) { toast.show(failed); return; }
+    if (failed) { toast.show(failed); return false; }
     if (how.atPlayhead) {
       const end = plan.startMs + plan.durMs;
       pause();
       if (end <= player.current.duration * 1000 + 1) seek(end);
       else seekWhenLonger.current = end;
     }
+    return true;
   }, [editModel, edit, pause, seek, t, toast]);
   /*
    * A thing of Saved put on the timeline without a drag (its "+", Enter, the source viewer's `,` and `.`): brought into
@@ -1143,6 +1150,20 @@ export function ProjectView({ projectId, onProject, onLeave }: {
     if (pickedMedia && pickedSaved) void placeSaved(pickedMedia, { mode, range, atPlayhead: true });
     else if (pickedMedia) void addMedia(pickedMedia, { mode, range, atPlayhead: true });
   }, [addMedia, placeSaved, pickedMedia, pickedSaved]);
+  /* the media library's basket: each item appended to the end of its track, in the order it was collected */
+  const addBasketToTimeline = React.useCallback(async (items: readonly { path: string; startMs: number; endMs: number }[]) => {
+    let added = 0;
+    for (const item of items) {
+      const file = allFiles.find((candidate) => candidate.path === item.path);
+      if (!file) continue;
+      const range = item.endMs > item.startMs && (file.durationMs ?? 0) > item.startMs
+        ? { inMs: item.startMs, outMs: Math.min(item.endMs, file.durationMs ?? item.endMs) }
+        : null;
+      // eslint-disable-next-line no-await-in-loop
+      if (await addMedia(file, { atEnd: true, range })) added += 1;
+    }
+    return added;
+  }, [addMedia, allFiles]);
   /* clips (and files) kept to use again in any project (lib/saved, studio/server/saved.mjs): the timeline's, the
      picture's and the media pane's "Add to Saved" */
   const saveThings = React.useCallback(async (what: Parameters<typeof api.save>[1], n: number) => {
@@ -3170,8 +3191,23 @@ export function ProjectView({ projectId, onProject, onLeave }: {
             ) : null}
               </>
             ) : workflowStage === 'media' ? (
-              /* the media library, the pane the editor keeps on the left grown to the whole step */
-              <div className={`${PANE} min-h-0 flex-1 bg-[var(--dock-pane)]`}>{mediaPool()}</div>
+              /* the media library step: its own command bar, grid, inspector and basket */
+              <MediaLibraryStage
+                projectId={projectId}
+                listing={listing}
+                sources={mediaSources}
+                usedSrcs={usedSrcs}
+                onImport={onImport}
+                onMove={onMove}
+                onReveal={(path) => reveal(path)}
+                onNewFolder={onNewFolder}
+                onExtractAudio={onExtractAudio}
+                onSetCover={(path) => onSetCover(path)}
+                onUseInEdit={(file) => { setWorkflowStage('edit'); pickMedia(file); }}
+                onAddToTimeline={addBasketToTimeline}
+                notify={(message) => toast.show(message)}
+                error={(message) => toast.showError(message)}
+              />
             ) : workflowStage === 'roughcut' ? (
               <RoughCutStage
                 totalMs={totalMs}

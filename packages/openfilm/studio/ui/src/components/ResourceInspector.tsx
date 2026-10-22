@@ -53,7 +53,7 @@ function formatFps(fps: number): string {
  * A file's facts, read-only: one per row and not drawn as inputs — anything that looks like an input gets clicked,
  * and none of these can be changed. Everything comes from props, so the panel opens without a request.
  */
-function AssetFields({ file }: { file: WorkspaceResource }) {
+export function AssetFields({ file }: { file: WorkspaceResource }) {
   const t = useT();
   const rows: { label: string; value: string }[] = [
     { label: t('assets.propType'), value: assetTypeText(file, t) },
