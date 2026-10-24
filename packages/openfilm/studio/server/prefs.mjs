@@ -10,6 +10,7 @@
  *                 (OPENFILM_SHARED_HOME, else this one), so every OpenFilm on the computer shares it.
  *   keys          the keyboard shortcuts: the scheme in use and the custom ones (null: OpenFilm's). Kept as Studio's
  *                 page gives them, in shape only (keysOf); the page checks every action and key (ui/src/lib/keymap.ts).
+ *   storyboard    the rough cut's search: how many candidate materials its shelf asks for and shows.
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -17,10 +18,10 @@ import { studioHome } from './projects.mjs';
 import { chooseFolder, chosenFolder } from '../../src/locations.mjs';
 
 /** @typedef {{ scheme: string, custom: Record<string, { base: string, keys: Record<string, string[]> }> }} Keys */
-/** @typedef {{ proxies: { on: boolean, height: 540 | 720 | 1080 }, seenVersion: string | null, projectsFolder: string | null, keys: Keys | null }} Prefs */
+/** @typedef {{ proxies: { on: boolean, height: 540 | 720 | 1080 }, seenVersion: string | null, projectsFolder: string | null, keys: Keys | null, storyboard: { candidateCount: number } }} Prefs */
 
-/** Proxies on by default, at 720p. */
-export const DEFAULT_PREFS = /** @type {Prefs} */ ({ proxies: { on: true, height: 720 }, seenVersion: null, projectsFolder: null, keys: null });
+/** Proxies on by default, at 720p; sixteen candidates in the storyboard shelf. */
+export const DEFAULT_PREFS = /** @type {Prefs} */ ({ proxies: { on: true, height: 720 }, seenVersion: null, projectsFolder: null, keys: null, storyboard: { candidateCount: 16 } });
 const VERSION = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
 const HEIGHTS = [540, 720, 1080];
 
@@ -58,6 +59,7 @@ export function prefsOf(raw) {
   const p = /** @type {{ proxies?: { on?: unknown, height?: unknown }, seenVersion?: unknown, projectsFolder?: unknown, keys?: unknown } | null} */ (raw && typeof raw === 'object' ? raw : null);
   const folder = (/** @type {unknown} */ v) => (typeof v === 'string' && isAbsolute(v) ? resolve(v) : null);
   const height = Number(p?.proxies?.height);
+  const candidates = Math.round(Number(/** @type {any} */ (p)?.storyboard?.candidateCount));
   return {
     proxies: {
       on: typeof p?.proxies?.on === 'boolean' ? p.proxies.on : DEFAULT_PREFS.proxies.on,
@@ -66,6 +68,9 @@ export function prefsOf(raw) {
     seenVersion: typeof p?.seenVersion === 'string' && VERSION.test(p.seenVersion) ? p.seenVersion : null,
     projectsFolder: folder(p?.projectsFolder),
     keys: keysOf(p?.keys),
+    storyboard: {
+      candidateCount: Number.isFinite(candidates) ? Math.max(3, Math.min(30, candidates)) : DEFAULT_PREFS.storyboard.candidateCount,
+    },
   };
 }
 
@@ -85,7 +90,7 @@ export function readPrefs() {
  */
 export function writePrefs(patch) {
   const now = readPrefs();
-  const asked = /** @type {{ proxies?: object, seenVersion?: unknown, projectsFolder?: unknown, keys?: unknown }} */ (patch && typeof patch === 'object' ? patch : {});
+  const asked = /** @type {{ proxies?: object, seenVersion?: unknown, projectsFolder?: unknown, keys?: unknown, storyboard?: object }} */ (patch && typeof patch === 'object' ? patch : {});
   const next = prefsOf({ ...now, ...asked, proxies: { ...now.proxies, ...(asked.proxies ?? {}) } });
   const at = file();
   let kept = {};

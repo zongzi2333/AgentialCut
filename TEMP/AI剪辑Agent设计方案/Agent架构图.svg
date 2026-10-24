@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="950" viewBox="0 0 1500 950">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7e57c2"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b9b70"/>
+    </marker>
+  </defs>
+
+  <rect width="1500" height="950" fill="#ffffff"/>
+
+  <text x="40" y="42" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="24" font-weight="700" fill="#1f1f1f">AI 剪辑 Agent 架构图</text>
+  <text x="40" y="914" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#666666">无制片人 Agent；流程控制器只执行状态机、两个审批门、版本和恢复。</text>
+  <text x="40" y="932" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#666666">分镜 Agent 合并输入解析，并在分镜阶段与素材检索 Agent 做预检回改。</text>
+
+  <!-- Skill service -->
+  <rect x="80" y="220" width="300" height="560" rx="12" fill="#ede7f6" stroke="#7e57c2" stroke-width="2"/>
+  <text x="230" y="410" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="15" font-weight="700" fill="#3f2a6b">Skill 管理服务</text>
+  <text x="230" y="438" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" fill="#3f2a6b">导入 / 路由 / 渐进加载</text>
+  <text x="230" y="462" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" fill="#3f2a6b">权限 / 版本</text>
+  <text x="230" y="486" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" fill="#3f2a6b">不直接改项目</text>
+  <text x="230" y="805" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#7e57c2">按阶段注入提示、资源和策略</text>
+
+  <!-- Main agents -->
+  <rect x="600" y="40" width="300" height="50" rx="10" fill="#e8f1ff" stroke="#4a78c2"/>
+  <text x="750" y="70" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" font-weight="700" fill="#1f3f6b">用户</text>
+
+  <rect x="600" y="120" width="300" height="60" rx="10" fill="#f5f5f5" stroke="#777" stroke-width="2"/>
+  <text x="750" y="146" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="13" font-weight="700" fill="#333333">流程控制器（非 Agent）</text>
+  <text x="750" y="166" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#555555">阶段 / 审批门 / 版本 / 恢复</text>
+
+  <rect x="600" y="220" width="300" height="60" rx="10" fill="#e1f5e8" stroke="#5b9b70" stroke-width="2"/>
+  <text x="750" y="246" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="13" font-weight="700" fill="#1f4d30">分镜 Agent</text>
+  <text x="750" y="266" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#2f5f42">输入解析 / 分镜 / 短词组 / 预检</text>
+
+  <rect x="600" y="320" width="300" height="60" rx="10" fill="#e1f5e8" stroke="#5b9b70"/>
+  <text x="750" y="346" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="13" font-weight="700" fill="#1f4d30">素材检索 Agent</text>
+  <text x="750" y="366" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#2f5f42">预检 / 正式检索 / 覆盖</text>
+
+  <rect x="600" y="420" width="300" height="60" rx="10" fill="#fce4ec" stroke="#c45b76"/>
+  <text x="750" y="446" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="13" font-weight="700" fill="#6b2540">剪辑 Agent</text>
+  <text x="750" y="466" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#7d3a52">选片 / 时间线 / EDL</text>
+
+  <rect x="600" y="520" width="300" height="60" rx="10" fill="#e1f5e8" stroke="#5b9b70"/>
+  <text x="750" y="546" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="13" font-weight="700" fill="#1f4d30">音频字幕 Agent</text>
+  <text x="750" y="566" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#2f5f42">TTS / 配乐 / 字幕</text>
+
+  <rect x="600" y="620" width="300" height="60" rx="10" fill="#e1f5e8" stroke="#5b9b70"/>
+  <text x="750" y="646" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="13" font-weight="700" fill="#1f4d30">质检 Agent</text>
+  <text x="750" y="666" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#2f5f42">技术 / 编辑 / 合规 / Skill</text>
+
+  <rect x="600" y="720" width="300" height="60" rx="10" fill="#e8f1ff" stroke="#4a78c2"/>
+  <text x="750" y="746" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="13" font-weight="700" fill="#1f3f6b">对话剪辑 Agent</text>
+  <text x="750" y="766" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#355a85">改时间线；结构变更回分镜审批</text>
+
+  <!-- Tools -->
+  <text x="1050" y="285" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" font-weight="700" fill="#666666">系统工具黑箱</text>
+
+  <rect x="1050" y="320" width="300" height="60" rx="10" fill="#e1f5e8" stroke="#5b9b70" stroke-width="2"/>
+  <text x="1200" y="346" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" font-weight="700" fill="#1f4d30">素材库</text>
+  <text x="1200" y="366" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#2f5f42">search / batch / coverage / similar</text>
+
+  <rect x="1050" y="420" width="300" height="60" rx="10" fill="#e1f5e8" stroke="#5b9b70" stroke-width="2"/>
+  <text x="1200" y="446" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" font-weight="700" fill="#1f4d30">渲染</text>
+  <text x="1200" y="466" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#2f5f42">preview / render</text>
+
+  <rect x="1050" y="520" width="300" height="60" rx="10" fill="#fff2cc" stroke="#d6b656" stroke-width="2"/>
+  <text x="1200" y="546" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" font-weight="700" fill="#6b5200">TTS / 配乐 / 字幕</text>
+  <text x="1200" y="566" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#7a5f00">synthesize / recommend / align</text>
+
+  <rect x="1050" y="720" width="300" height="60" rx="10" fill="#e8f1ff" stroke="#4a78c2" stroke-width="2"/>
+  <text x="1200" y="746" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" font-weight="700" fill="#1f3f6b">MCP 工具面</text>
+  <text x="1200" y="766" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#355a85">read / edit_timeline / preview / undo / lock</text>
+
+  <rect x="1050" y="820" width="300" height="60" rx="10" fill="#e8f1ff" stroke="#4a78c2" stroke-width="2"/>
+  <text x="1200" y="846" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="12" font-weight="700" fill="#1f3f6b">外部 ACP Agent</text>
+  <text x="1200" y="866" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#355a85">只做对话剪辑</text>
+
+  <!-- Main arrows -->
+  <line x1="750" y1="90" x2="750" y2="120" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="750" y1="180" x2="750" y2="220" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="750" y1="280" x2="750" y2="320" stroke="#5b9b70" stroke-width="1.5" marker-start="url(#arrowGreen)" marker-end="url(#arrowGreen)"/>
+  <text x="762" y="305" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#2f5f42">预检 / 覆盖 / 回改</text>
+  <line x1="750" y1="380" x2="750" y2="420" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="762" y="405" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#4b5563">候选</text>
+  <line x1="750" y1="480" x2="750" y2="520" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="762" y="505" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#4b5563">EDL</text>
+  <line x1="750" y1="580" x2="750" y2="620" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="762" y="605" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#4b5563">成片</text>
+  <line x1="750" y1="680" x2="750" y2="720" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="762" y="705" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#4b5563">审批 / 修改</text>
+
+  <!-- Skill arrows -->
+  <line x1="380" y1="248" x2="600" y2="250" stroke="#7e57c2" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowPurple)"/>
+  <line x1="380" y1="349" x2="600" y2="350" stroke="#7e57c2" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowPurple)"/>
+  <line x1="380" y1="450" x2="600" y2="450" stroke="#7e57c2" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowPurple)"/>
+  <line x1="380" y1="550" x2="600" y2="550" stroke="#7e57c2" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowPurple)"/>
+  <line x1="380" y1="651" x2="600" y2="650" stroke="#7e57c2" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowPurple)"/>
+  <line x1="380" y1="752" x2="600" y2="750" stroke="#7e57c2" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowPurple)"/>
+
+  <!-- Tool arrows -->
+  <line x1="900" y1="350" x2="1050" y2="350" stroke="#5b9b70" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowGreen)"/>
+  <line x1="900" y1="450" x2="1050" y2="450" stroke="#5b9b70" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowGreen)"/>
+  <line x1="900" y1="550" x2="1050" y2="550" stroke="#5b9b70" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowGreen)"/>
+  <line x1="900" y1="750" x2="1050" y2="750" stroke="#5b9b70" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrowGreen)"/>
+  <line x1="1200" y1="780" x2="1200" y2="820" stroke="#4a78c2" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
+  <text x="1212" y="805" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="10" fill="#355a85">受限工具</text>
+
+  <!-- Legend -->
+  <text x="80" y="860" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#666666">实线：产物交接；虚线：Skill / 工具调用；双向箭头：预检回改循环。</text>
+  <text x="80" y="884" font-family="Microsoft YaHei, Noto Sans SC, sans-serif" font-size="11" fill="#666666">两个人工审批门：分镜审批、成片审批，由流程控制器执行。</text>
+</svg>

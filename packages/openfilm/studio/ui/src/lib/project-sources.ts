@@ -20,7 +20,7 @@ export type BrowseListing = {
   film: boolean;
   folders: BrowseFolder[];
   more: boolean;
-  places: { id: string; path: string }[];
+  places: { id: string; path: string; label?: string }[];
   recent: string[];
 };
 export type FetchPhase = 'lookup' | 'download' | 'checkout' | 'copy';

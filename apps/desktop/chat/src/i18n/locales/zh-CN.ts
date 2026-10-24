@@ -391,6 +391,13 @@ export const zhCN: Words = {
   agentRef: {
     track: '轨道 {n}',
   },
+  /** the chat's first moment: the bridge is still answering, or it did not (chat/src/mount.tsx) */
+  boot: {
+    starting: '正在打开 AI 对话…',
+    unavailable: 'AI 对话暂时不可用',
+    retry: '重试',
+    timeout: '连接对话通道超时。',
+  },
   /** what a turn changed in the project's files, under its reply (components/FileChangesList) */
   fileChanges: {
     more: '还有 {n} 个文件',

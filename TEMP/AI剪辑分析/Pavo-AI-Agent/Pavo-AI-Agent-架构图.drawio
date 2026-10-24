@@ -1,0 +1,30 @@
+<mxfile host="app.diagrams.net" modified="2026-10-24T00:00:00.000Z" agent="OpenCode" version="24.7.17" type="device">
+  <diagram id="pavo-architecture" name="Pavo AI Agent 架构">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/><mxCell id="1" parent="0"/>
+        <mxCell id="u" value="用户故事 / 外部 AI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f1ff;strokeColor=#4a78c2;fontSize=14;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="40" y="250" width="150" height="60" as="geometry"/></mxCell>
+        <mxCell id="in" value="Web API / MCP Server&lt;br&gt;创建、查询、重生成、渲染" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#777;fontSize=13;" vertex="1" parent="1"><mxGeometry x="240" y="230" width="190" height="100" as="geometry"/></mxCell>
+        <mxCell id="wf" value="固定 Workflow&lt;br&gt;服务端决定顺序" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="480" y="230" width="180" height="100" as="geometry"/></mxCell>
+        <mxCell id="agents" value="7 个一次性生成 Agent&lt;br&gt;Planner → Character → Scene → Prop&lt;br&gt;→ Storyboard → Reviewer → Fixer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f5e8;strokeColor=#5b9b70;fontSize=13;" vertex="1" parent="1"><mxGeometry x="710" y="210" width="270" height="140" as="geometry"/></mxCell>
+        <mxCell id="schema" value="结构校验&lt;br&gt;JSON / Pydantic&lt;br&gt;失败时宽松回退" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#c45b76;fontSize=13;" vertex="1" parent="1"><mxGeometry x="1030" y="230" width="180" height="100" as="geometry"/></mxCell>
+        <mxCell id="store" value="Project State&lt;br&gt;角色 / 场景 / 道具 / Storyboard / Trace / Version&lt;br&gt;SQLite JSON" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#7e57c2;fontSize=13;" vertex="1" parent="1"><mxGeometry x="1260" y="210" width="260" height="140" as="geometry"/></mxCell>
+        <mxCell id="prompt" value="Storyboard → T2V Prompt Builder&lt;br&gt;镜头类型、运镜、角色、场景、动作、情绪" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="1"><mxGeometry x="720" y="480" width="250" height="100" as="geometry"/></mxCell>
+        <mxCell id="video" value="逐镜视频生成&lt;br&gt;每个 shot 单独调用视频模型&lt;br&gt;结果写入 videos[]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f5e8;strokeColor=#5b9b70;fontSize=13;" vertex="1" parent="1"><mxGeometry x="1040" y="480" width="220" height="100" as="geometry"/></mxCell>
+        <mxCell id="manual" value="人工分镜调整&lt;br&gt;拖动顺序 / 修改时长 / 保存 Storyboard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#777;dashed=1;fontSize=13;" vertex="1" parent="1"><mxGeometry x="1260" y="480" width="260" height="100" as="geometry"/></mxCell>
+        <mxCell id="memory" value="MCP 旁路能力&lt;br&gt;Memory / RAG&lt;br&gt;只在 MCP 调用前后注入" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#777;dashed=1;fontSize=13;" vertex="1" parent="1"><mxGeometry x="260" y="500" width="220" height="90" as="geometry"/></mxCell>
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="u" target="in"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="in" target="wf"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="wf" target="agents"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="agents" target="schema"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="schema" target="store"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" value="分镜完成后" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;fontSize=11;" edge="1" parent="1" source="store" target="prompt"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="prompt" target="video"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="store" target="manual"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="manual" target="store"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="memory" target="in"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" value="Reviewer → Fixer" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;dashed=1;fontSize=11;" edge="1" parent="1" source="schema" target="agents"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

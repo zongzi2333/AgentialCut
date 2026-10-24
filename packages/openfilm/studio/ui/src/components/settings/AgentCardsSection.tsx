@@ -11,7 +11,7 @@ import * as React from 'react';
 import { Bot, Check, ChevronDown, FolderPlus, GripVertical, Loader2, Plus, RotateCcw, Search, Trash2, X } from 'lucide-react';
 import { api, ApiError, type AgentCard, type AgentCardsResponse, type ProviderStateView } from '@/api';
 import { sourcesApi, type SkillEntry } from '@/lib/project-sources';
-import { SettingsButton, SettingsField, SettingsGroup, SettingsPage, settingsError } from './ui';
+import { SettingsButton, SettingsField, SettingsGroup, SettingsNumberField, SettingsPage, settingsError } from './ui';
 import { SettingsSelect } from './SettingsSelect';
 import { FolderBrowserDialog } from '../ProjectSources';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -19,9 +19,8 @@ import { useAutoSave } from '@/lib/use-auto-save';
 import { useDismissExpanded } from './use-dismiss-expanded';
 
 const EMPTY_AGENTS: AgentCardsResponse['state'] = { revision: 0, agents: [] };
-const INSTALLED = (skill: SkillEntry) => skill.installed !== false && !skill.off;
 
-export function AgentCardsSection({ embedded = false }: { embedded?: boolean }) {
+export function AgentCardsSection({ embedded = false, projectId = null }: { embedded?: boolean; projectId?: string | null }) {
   const [agents, setAgents] = React.useState<AgentCardsResponse | null>(null);
   const [providers, setProviders] = React.useState<ProviderStateView | null>(null);
   const [skills, setSkills] = React.useState<SkillEntry[]>([]);
@@ -36,13 +35,13 @@ export function AgentCardsSection({ embedded = false }: { embedded?: boolean }) 
 
   const load = React.useCallback(() => {
     setError('');
-    void Promise.all([api.agentCards(), api.providerCards(), sourcesApi.skills(null)]).then(([nextAgents, nextProviders, nextSkills]) => {
+    void Promise.all([api.agentCards(), api.providerCards(), sourcesApi.skills(projectId)]).then(([nextAgents, nextProviders, nextSkills]) => {
       setAgents(nextAgents);
       setProviders(nextProviders.state);
       setSkills(nextSkills);
       setSelected((current) => current && nextAgents.state.agents.some((agent) => agent.id === current) ? current : nextAgents.state.agents[0]?.id ?? null);
     }).catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
-  }, []);
+  }, [projectId]);
   React.useEffect(load, [load]);
 
   const auto = useAutoSave<AgentCardsResponse['state']>({
@@ -107,9 +106,20 @@ export function AgentCardsSection({ embedded = false }: { embedded?: boolean }) 
       draft.splice(a < b ? b - 1 : b, 0, moved);
     });
   };
-  const mount = (agentId: string, name: string) => update(agentId, {
-    skills: [...new Set([...(agents?.state.agents.find((agent) => agent.id === agentId)?.skills ?? []), name])],
-  });
+  const mount = (agentId: string, name: string) => {
+    update(agentId, {
+      skills: [...new Set([...(agents?.state.agents.find((agent) => agent.id === agentId)?.skills ?? []), name])],
+    });
+    const skill = skills.find((item) => item.name === name);
+    /* An official Community skill is usable from the pool even before its catalog checkbox was
+       installed: mounting it installs it, so the agent and the gallery agree. */
+    if (skill?.source === 'official' && skill.installed === false) {
+      void sourcesApi.setSkillInstalled(name, true)
+        .then(() => sourcesApi.skills(projectId))
+        .then(setSkills)
+        .catch(() => {});
+    }
+  };
   const unmount = (agentId: string, name: string) => update(agentId, {
     skills: (agents?.state.agents.find((agent) => agent.id === agentId)?.skills ?? []).filter((skill) => skill !== name),
   });
@@ -117,7 +127,7 @@ export function AgentCardsSection({ embedded = false }: { embedded?: boolean }) 
   const roleLabel = (id: string) => roles.find((role) => role.id === id)?.label ?? '不参与流程';
   const categoriesFor = (role: AgentCard['role']) => role === 'verify' ? ['vl'] as const : ['llm'] as const;
   const modelCardsFor = (role: AgentCard['role']) => (providers?.cards ?? []).filter((card) => card.enabled && (categoriesFor(role) as readonly string[]).includes(card.category));
-  const installedSkills = skills.filter(INSTALLED);
+  const installedSkills = skills.filter((skill) => !skill.off);
   const pool = installedSkills.filter((skill) => {
     const q = skillQuery.trim().toLowerCase();
     return !q || [skill.name, skill.description, skill.shown?.title?.zh, skill.shown?.title?.en, skill.shown?.summary?.zh, skill.shown?.summary?.en].some((word) => word?.toLowerCase().includes(q));
@@ -177,9 +187,9 @@ export function AgentCardsSection({ embedded = false }: { embedded?: boolean }) 
                     <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">工作槽位<SettingsSelect label="工作槽位" value={agent.role} onChange={(/** @type {string} */ value) => setRole(agent.id, value as AgentCard['role'])} options={[{ value: '', label: '不参与流程' }, ...roles.map((role) => ({ value: role.id, label: role.label }))]} width={190} /></label>
                     <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">提供商卡片<SettingsSelect label="提供商卡片" value={agent.cardId} onChange={(/** @type {string} */ value) => { const nextCard = cards.find((item) => item.id === value); update(agent.id, { cardId: value, modelId: nextCard?.models[0]?.id ?? '' }); }} options={[{ value: '', label: cards.length ? '未选择' : '没有可用卡片' }, ...cards.map((item) => ({ value: item.id, label: item.name }))]} width={220} /></label>
                     <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">模型<SettingsSelect label="模型" value={agent.modelId} onChange={(/** @type {string} */ value) => update(agent.id, { modelId: value })} options={[{ value: '', label: card?.models.length ? '未选择' : '先选择提供商卡片' }, ...(card?.models ?? []).map((item) => ({ value: item.id, label: item.name }))]} width={220} /></label>
-                    <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">Temperature<SettingsField type="number" step="0.05" min="0" max="2" value={agent.temperature} onChange={(e) => update(agent.id, { temperature: Number(e.target.value) })} aria-label="Temperature" /></label>
-                    <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">Max tokens<SettingsField type="number" min="64" value={agent.maxTokens} onChange={(e) => update(agent.id, { maxTokens: Number(e.target.value) })} aria-label="Max tokens" /></label>
-                    <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">Top P<SettingsField type="number" step="0.05" min="0" max="1" value={agent.topP} onChange={(e) => update(agent.id, { topP: Number(e.target.value) })} aria-label="Top P" /></label>
+                    <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">Temperature<SettingsNumberField step={0.05} min={0} max={2} value={agent.temperature} onCommit={(value) => update(agent.id, { temperature: value ?? 0.2 })} aria-label="Temperature" /></label>
+                    <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">Max tokens<SettingsNumberField min={64} value={agent.maxTokens} onCommit={(value) => update(agent.id, { maxTokens: value ?? 3000 })} aria-label="Max tokens" /></label>
+                    <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">Top P<SettingsNumberField step={0.05} min={0} max={1} value={agent.topP} onCommit={(value) => update(agent.id, { topP: value ?? 0.9 })} aria-label="Top P" /></label>
                     <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">工具权限<SettingsSelect label="工具权限" value={agent.tools.includes('web-search') ? 'web-search' : ''} onChange={(/** @type {string} */ value) => update(agent.id, { tools: value ? ['web-search'] : [] })} options={[{ value: '', label: '无工具' }, { value: 'web-search', label: '允许网页搜索' }]} width={190} /></label>
                   </div>
                   <div className="mt-2">
@@ -221,7 +231,7 @@ export function AgentCardsSection({ embedded = false }: { embedded?: boolean }) 
           {pool.map((skill) => (
             <div key={`${skill.source}:${skill.name}`} className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5">
               <span draggable onDragStart={(event) => { event.dataTransfer.setData('application/x-openfilm-agent-skill', skill.name); event.dataTransfer.effectAllowed = 'copy'; }} className="cursor-grab active:cursor-grabbing"><GripVertical size={12} className="shrink-0 text-[var(--text-faint)]" /></span>
-              <span className="min-w-0 flex-1"><span className="block truncate text-[11.5px] text-[var(--text)]">{skillLabel(skill)}</span><span className="block truncate text-[9.5px] text-[var(--text-faint)]">{skill.source === 'mine' ? '我的' : skill.source === 'project' ? '项目' : '官方'} · {skill.name}</span></span>
+              <span className="min-w-0 flex-1"><span className="block truncate text-[11.5px] text-[var(--text)]">{skillLabel(skill)}</span><span className="block truncate text-[9.5px] text-[var(--text-faint)]">{skill.source === 'mine' ? '我的' : skill.source === 'project' ? '项目' : skill.installed === false ? '官方社区 · 未安装' : '官方'} · {skill.name}</span></span>
               <button type="button" aria-label={`删除技能 ${skill.name}`} onClick={() => setRemovingSkill(skill)} className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--err)]"><Trash2 size={11} /></button>
               <button type="button" aria-label={`挂载 ${skill.name}`} onClick={() => { if (agents.state.agents.length) { const target = selected ?? agents.state.agents[0]!.id; mount(target, skill.name); setSelected(target); } }}
                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--text-faint)] hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"><Plus size={12} /></button>
@@ -231,7 +241,7 @@ export function AgentCardsSection({ embedded = false }: { embedded?: boolean }) 
         </div>
       </SettingsGroup>
 
-      {importOpen ? <FolderBrowserDialog mode="choose" title="添加 Skill 文件夹" startAt="" onPick={async (path) => { setImportOpen(false); try { await sourcesApi.importSkill(path); setSkills(await sourcesApi.skills(null)); setNotice('已添加技能'); } catch (e) { setError(e instanceof ApiError ? e.message : String(e)); } }} onClose={() => setImportOpen(false)} /> : null}
+      {importOpen ? <FolderBrowserDialog mode="choose" title="添加 Skill 文件夹" startAt="" onPick={async (path) => { setImportOpen(false); try { await sourcesApi.importSkill(path); setSkills(await sourcesApi.skills(projectId)); setNotice('已添加技能'); } catch (e) { setError(e instanceof ApiError ? e.message : String(e)); } }} onClose={() => setImportOpen(false)} /> : null}
       <ConfirmDialog open={Boolean(removingSkill)} danger title={`删除技能 ${removingSkill ? skillLabel(removingSkill) : ''}`} description="这会删除真实的技能文件夹（官方技能则是卸载），并从所有智能体上卸载。确定继续？" confirmLabel="删除" cancelLabel="取消" onCancel={() => setRemovingSkill(null)}
         onConfirm={() => {
           const skill = removingSkill;
@@ -240,8 +250,8 @@ export function AgentCardsSection({ embedded = false }: { embedded?: boolean }) 
           const removing = skill;
           setSkills((list) => list.filter((item) => !(item.source === removing.source && item.name === removing.name)));
           setAgents((current) => current ? { ...current, state: { ...current.state, agents: current.state.agents.map((agent) => ({ ...agent, skills: (agent.skills ?? []).filter((name) => name !== removing.name) })) } } : current);
-          const request = removing.source === 'official' ? sourcesApi.setSkillInstalled(removing.name, false) : sourcesApi.removeSkill(removing.name, null);
-          void request.then(() => sourcesApi.skills(null)).then((next) => setSkills(next)).catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
+          const request = removing.source === 'official' ? sourcesApi.setSkillInstalled(removing.name, false) : sourcesApi.removeSkill(removing.name, projectId);
+          void request.then(() => sourcesApi.skills(projectId)).then((next) => setSkills(next)).catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
         }} />
     </>
   );

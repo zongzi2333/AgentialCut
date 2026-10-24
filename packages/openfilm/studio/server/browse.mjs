@@ -87,18 +87,26 @@ export async function browseFolder(path, { root = homedir(), anywhere = false } 
 /**
  * Where the person may want to start: the home folder, the projects library, and the usual folders of a home, those
  * that exist; then the folders of the projects opened lately. Only folders under `root`.
- * @param {{ root?: string, library: string, recent: string[] }} options
+ * @param {{ root?: string, library: string, recent: string[], anywhere?: boolean }} options
  */
-export async function browsePlaces({ root = homedir(), library, recent }) {
+export async function browsePlaces({ root = homedir(), library, recent, anywhere = false }) {
   const top = await realpath(root);
-  /** @type {{ id: string, path: string }[]} */
+  /** @type {{ id: string, path: string, label?: string }[]} */
   const places = [{ id: 'home', path: top }];
-  const add = async (/** @type {string} */ id, /** @type {string} */ path) => {
+  const add = async (/** @type {string} */ id, /** @type {string} */ path, /** @type {string | undefined} */ label) => {
     const real = await realpath(path).catch(() => null);
-    if (real && within(top, real) && !places.some((p) => p.path === real) && (await stat(real).then((s) => s.isDirectory(), () => false))) places.push({ id, path: real });
+    if (real && within(top, real) && !places.some((p) => p.path === real) && (await stat(real).then((s) => s.isDirectory(), () => false))) places.push({ id, path: real, ...(label ? { label } : {}) });
   };
-  await add('library', library);
-  for (const name of ['Desktop', 'Documents', 'Downloads', 'Movies', 'Videos']) await add(name.toLowerCase(), join(top, name));
+  await add('library', library, undefined);
+  for (const name of ['Desktop', 'Documents', 'Downloads', 'Movies', 'Videos']) await add(name.toLowerCase(), join(top, name), undefined);
+  /* Settings may move a library to another disk: that browser gets the drives themselves as places. */
+  if (anywhere && process.platform === 'win32') {
+    for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+      const drive = `${letter}:\\`;
+      if (!existsSync(drive)) continue;
+      if (!places.some((p) => p.path.toLowerCase() === drive.toLowerCase())) places.push({ id: `drive-${letter}`, path: drive, label: `${letter}:` });
+    }
+  }
   /** @type {string[]} */
   const recentFolders = [];
   for (const project of recent) {

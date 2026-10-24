@@ -16,7 +16,7 @@ import {
   type ProviderCategoryInfo, type ProviderConnectionView, type ProviderModel, type ProviderStateView,
 } from '@/api';
 import { ProviderMark } from './ProviderMark';
-import { SettingsButton, SettingsField, SettingsGroup, SettingsItem, SettingsPage, SettingsSwitch, settingsError } from './ui';
+import { SettingsButton, SettingsField, SettingsGroup, SettingsItem, SettingsNumberField, SettingsPage, SettingsSwitch, settingsError } from './ui';
 import { SettingsSelect } from './SettingsSelect';
 import { useProviders } from '@/lib/providers';
 import { CustomServices } from './CustomServices';
@@ -356,7 +356,7 @@ function ProviderCardEditor({ card, state, onChange, onChangeConnection, onShare
             <div key={`${model.id}-${index}`} className="grid gap-1 rounded-md bg-[var(--surface-2)] p-1.5 sm:grid-cols-[1fr_1fr_70px_auto]">
               <SettingsField value={model.id} onChange={(e) => updateModel(index, { id: e.target.value })} aria-label="模型 ID" placeholder="model id" className="h-7 font-mono text-[11px]" />
               <SettingsField value={model.name} onChange={(e) => updateModel(index, { name: e.target.value })} aria-label="模型名称" placeholder="显示名称" className="h-7 text-[11px]" />
-              <SettingsField type="number" value={model.dimension ?? ''} onChange={(e) => updateModel(index, { dimension: Number(e.target.value) || undefined })} aria-label="向量维度" placeholder="维度" className="h-7 text-[11px]" />
+              <SettingsNumberField allowEmpty value={model.dimension ?? null} onCommit={(value) => updateModel(index, { dimension: value ?? undefined })} aria-label="向量维度" placeholder="维度" className="h-7 text-[11px]" />
               <div className="flex items-center gap-1">
                 <SettingsSwitch checked={Boolean(model.vision)} label="图片输入" onChange={(vision) => updateModel(index, { vision })} />
                 <button type="button" aria-label="移除模型" disabled={card.models.length <= 1} onClick={() => removeModel(index)} className="text-[var(--text-faint)] hover:text-[var(--err)] disabled:opacity-30"><Trash2 size={12} /></button>

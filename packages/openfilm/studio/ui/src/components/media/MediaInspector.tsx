@@ -7,7 +7,7 @@
  */
 import type { ReactNode } from 'react';
 import {
-  Film, FolderOpen, Image as ImageIcon, ListPlus, Music4, Sparkles, Trash2,
+  Film, FolderOpen, Image as ImageIcon, ListPlus, Loader2, Music4, Sparkles, Trash2,
 } from 'lucide-react';
 import { useT } from '@/i18n';
 import { useKeyHint } from '@/lib/keymap-store';
@@ -21,7 +21,7 @@ const BTN = 'inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-
 const PRIMARY = `${BTN} bg-[var(--text)] text-[var(--panel)] hover:opacity-90 disabled:pointer-events-none disabled:opacity-40`;
 const SECONDARY = `${BTN} text-[var(--text)] ring-1 ring-inset ring-[var(--border-strong)] hover:bg-[var(--bg-hover)] disabled:pointer-events-none disabled:opacity-40`;
 
-export function MediaInspector({ file, shot, selected, used, sources, width, onAdd, onAddShot, onUseInEdit, onReveal, onExtractAudio, onSetCover, onRemove, onIndex }: {
+export function MediaInspector({ file, shot, selected, used, sources, width, onAdd, onAddShot, onUseInEdit, onReveal, onExtractAudio, onSetCover, onRemove, onIndex, description, describing, onDescribe }: {
   file: WorkspaceResource | null;
   /** A semantic search hit: the part of the file to preview and add. */
   shot?: SemanticHit | null;
@@ -38,6 +38,10 @@ export function MediaInspector({ file, shot, selected, used, sources, width, onA
   /** Take the files out of the library's view; the files themselves stay in the project folder. */
   onRemove: (files: readonly WorkspaceResource[]) => void;
   onIndex?: (file: WorkspaceResource) => void;
+  /** What the material shows; empty until the person asks the VL agent for it. */
+  description?: string;
+  describing?: boolean;
+  onDescribe?: (file: WorkspaceResource, regenerate: boolean) => void;
 }) {
   const t = useT();
   const keyHint = useKeyHint();
@@ -106,6 +110,22 @@ export function MediaInspector({ file, shot, selected, used, sources, width, onA
                 </button>
               )}
             </div>
+
+            <section className="mt-3 border-t border-[var(--border-soft)] pt-3">
+              <div className="flex items-center gap-2">
+                <h3 className="min-w-0 flex-1 text-[11px] font-medium text-[var(--text-faint)]">素材描述</h3>
+                {onDescribe && ['video', 'image', 'mg'].includes(file.kind) ? (
+                  <button type="button" disabled={describing} onClick={() => onDescribe(file, Boolean(description))}
+                    className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] text-[var(--text-muted)] ring-1 ring-inset ring-[var(--border)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)] disabled:opacity-40">
+                    {describing ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                    {describing ? '生成中…' : description ? '重新生成' : '生成描述'}
+                  </button>
+                ) : null}
+              </div>
+              <p className={`mt-1 whitespace-pre-wrap break-words text-[11px] leading-relaxed ${description ? 'text-[var(--text-muted)]' : 'text-[var(--text-faint)]'}`}>
+                {description || '尚未生成。点击按钮后由视觉模型根据画面补全；平时不会自动占用模型调用。'}
+              </p>
+            </section>
 
             <section className="mt-4 border-t border-[var(--border-soft)] pt-3">
               <h3 className="text-[11px] font-medium text-[var(--text-faint)]">{t('mediaLibrary.facts')}</h3>

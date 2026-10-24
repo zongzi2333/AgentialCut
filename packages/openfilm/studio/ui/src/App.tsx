@@ -48,6 +48,8 @@ export function App() {
   const [returnTo, setReturnTo] = useState('/');
   const [returnProjects, setReturnProjects] = useState(false);
   const settingsPushed = useRef(false);
+  const returnHome = useRef(false);
+  const [none, setNone] = useState(false);
   const go = (to: string, replace = false) => {
     if (to !== location.pathname) (replace ? history.replaceState : history.pushState).call(history, null, '', keepKey(to));
     setPath(to);
@@ -73,11 +75,13 @@ export function App() {
   const leave = () => { if (tabs) tabs.report({ gone: true }); else go('/', true); };
 
   const id = projectIn(path);
+  useEffect(() => { if (id) { setNone(false); returnHome.current = false; } }, [id]);
   const settingsSection = settingsIn(path);
   const openSettings = (section: SettingsSection = 'general', options?: { projects?: boolean }) => {
     if (!settingsIn(location.pathname)) {
       setReturnTo(location.pathname || '/');
       setReturnProjects(Boolean(options?.projects));
+      returnHome.current = !projectIn(location.pathname);
       settingsPushed.current = true;
     }
     go(`/settings/${section}`);
@@ -87,7 +91,16 @@ export function App() {
        it had open, rather than rebuilding whatever happens to be the last project. */
     if (settingsPushed.current && history.length > 1) {
       settingsPushed.current = false;
+      const home = returnHome.current;
+      returnHome.current = false;
       history.back();
+      if (home) setNone(true);
+      return;
+    }
+    if (returnHome.current || returnTo === '/') {
+      returnHome.current = false;
+      setNone(true);
+      go('/', true);
       return;
     }
     go(returnTo || '/');
@@ -99,9 +112,8 @@ export function App() {
   }, [settingsSection, returnProjects]);
   /* no project in the address: the one opened last that is still there, else the Projects window (`none`); with
      tabs, the projects (no tab is open) */
-  const [none, setNone] = useState(false);
   useEffect(() => {
-    if (id || tabs || settingsSection) return;
+    if (id || tabs || settingsSection || none) return;
     let alive = true;
     /* the list not read (refused, or no answer in time): the Projects window, which says so and tries again */
     void within(api.projects(), LIST_WAIT_MS).then((projects) => {
@@ -110,8 +122,8 @@ export function App() {
       if (last) go(`/projects/${last.id}`, true);
       else setNone(true);
     }, () => { if (alive) setNone(true); });
-    return () => { alive = false; setNone(false); };
-  }, [id, settingsSection]);
+    return () => { alive = false; };
+  }, [id, settingsSection, none]);
 
   const settingsProject = projectIn(returnTo);
   const page = settingsSection ? (

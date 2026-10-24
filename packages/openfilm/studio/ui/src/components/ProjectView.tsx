@@ -7,7 +7,7 @@
  * are written one at a time (see editor/use-film.ts); the agent's writes come in through the folder's events.
  */
 import * as React from 'react';
-import { BookmarkPlus, ClipboardCopy, ClipboardPaste, GalleryVerticalEnd, Layers, LibraryBig, MessageSquarePlus, Settings2, TriangleAlert, Upload } from 'lucide-react';
+import { BookmarkPlus, ClipboardCopy, ClipboardPaste, GalleryVerticalEnd, Layers, LibraryBig, MessageSquare, MessageSquarePlus, Settings2, Sparkles, TriangleAlert, Upload } from 'lucide-react';
 import { applyOps } from '../../../server/ops.mjs';
 import { api, ApiError, PREFS_EVENT, projectEvents, type Clip, type Film, type Listing, type Op, type ProjectFilm, type ProjectSettings } from '@/api';
 import { posterUrl } from './ProjectCover';
@@ -82,6 +82,8 @@ import { AudioMeters, METERS_W } from './AudioMeters';
 import { trackFlagStep, type SessionTimeline } from './OperationHistory';
 import { ProjectLayoutMenu } from './ProjectLayoutMenu';
 import { ProjectMenu } from './ProjectMenu';
+import { ApiLogWindow } from './ApiLogWindow';
+import { EditChatPanel } from './ai/EditChatPanel';
 import { ProjectHistoryButton, ProjectHistoryControls } from './ProjectHistoryControls';
 import { useProjectHistory } from './use-project-history';
 import { ProjectsPopover } from './ProjectsLibrary';
@@ -129,6 +131,8 @@ const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator
 const MEDIA_SCOPE: { current: 'project' | 'saved' } = { current: 'project' };
 /** where the app's panel starts: under Studio's top bar (its h-8) */
 const HOST_PANEL_TOP = 32;
+/** The browser Studio's own AI conversation, beside the editor the way the desktop app's chat is. */
+const EDIT_CHAT_WIDTH = 360;
 
 /**
  * A panel shown or hidden, as the person last left it (kept in this browser; open when nothing is kept): the value,
@@ -151,6 +155,15 @@ const VIEWER_BESIDE_ASSETS = 440;
 const TITLE_MAX_CHARS = 56;
 const TOP_BTN =
   'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-md text-[var(--text-dim)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)]';
+
+/* The stage is kept only for a return from Settings (this module stays loaded while Settings is
+   shown). A reload starts a project at its first step again rather than restoring an old visit. */
+try {
+  for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
+    const key = sessionStorage.key(i);
+    if (key?.startsWith('openfilm.workflow.')) sessionStorage.removeItem(key);
+  }
+} catch { /* private mode */ }
 
 const fitBox = (w: number, h: number): React.CSSProperties => ({
   width: `min(100cqw, 100cqh * ${w} / ${h})`,
@@ -707,12 +720,24 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
   const [layersWidth, setLayersWidth] = React.useState(240);
   const layersPaneRef = React.useRef<HTMLDivElement | null>(null);
   const [timelineOpen, setTimelineOpen] = useKeptFlag('openfilm.project.timeline');
+  /* The editing stage's AI conversation; open until the person closes it, kept like the other panes. */
+  const [editChatOpen, setEditChatOpen] = useKeptFlag('openfilm.project.aiChat', true);
   /* open whenever the project opens (a reload too); closed, it stays closed until then or until a selection opens it */
   const [inspectorOpen, setInspectorOpen] = React.useState(true);
   const closeInspector = React.useCallback(() => setInspectorOpen(false), [setInspectorOpen]);
-  /* Where the workflow stands. A project opens at its first step: the film's facts and its library, with editing one
-     click away; the others are visits, so the editor is unmounted while they are shown and comes back as it was. */
-  const [workflowStage, setWorkflowStage] = React.useState<WorkflowStage>('project');
+  /* Where the workflow stands. A project opens at its first step, unless this project had a step open before
+     Settings or a reload: the editor is unmounted while Settings is shown, and coming back should not throw the
+     person out of the media library or the storyboard. */
+  const [workflowStage, setWorkflowStage] = React.useState<WorkflowStage>(() => {
+    try {
+      const saved = sessionStorage.getItem(`openfilm.workflow.${projectId}`);
+      if (saved === 'project' || saved === 'media' || saved === 'roughcut' || saved === 'edit' || saved === 'sound' || saved === 'deliver') return saved;
+    } catch { /* private mode */ }
+    return 'project';
+  });
+  React.useEffect(() => {
+    try { sessionStorage.setItem(`openfilm.workflow.${projectId}`, workflowStage); } catch { /* private mode */ }
+  }, [projectId, workflowStage]);
   /* the keys that move through the workflow call this (it is defined below, where the film is in hand) */
   const stageGo = React.useRef<(stage: WorkflowStage) => void>(() => {});
   const [rowWidth, setRowWidth] = React.useState(0);
@@ -800,7 +825,12 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
   }, []);
   const rowNarrow = rowWidth > 0 && rowWidth < MIN_VIEWER + DEFAULT_INSPECTOR + 240;
   const inspectorIdle = inspectorContent === 'selection' && !stageElement && !selectedBlocks.length;
-  const inspectorShown = inspectorOpen && !(rowNarrow && inspectorIdle);
+  /* In the browser Studio the AI column takes real room, as the desktop app's chat does. On a window that cannot hold
+     it beside the inspector and the picture, the inspector makes room instead of squeezing the picture to a sliver. */
+  const browserChatOpen = workflowStage === 'edit' && editChatOpen && !studioHost?.panel;
+  const layoutWidth = rowWidth || Math.max(0, (typeof window === 'undefined' ? 0 : window.innerWidth) - (browserChatOpen ? EDIT_CHAT_WIDTH : 0));
+  const chatNeedsRoom = browserChatOpen && layoutWidth > 0 && layoutWidth < MIN_VIEWER + DEFAULT_INSPECTOR + 280 + 16;
+  const inspectorShown = inspectorOpen && !(rowNarrow && inspectorIdle) && !chatNeedsRoom;
   const inspectorWanted = inspectorWidth ?? DEFAULT_INSPECTOR;
   const assetsRoom = rowWidth - (inspectorShown ? inspectorWanted : 0) - VIEWER_BESIDE_ASSETS - 16;
   const assetsShownWidth = rowWidth ? Math.min(assetsWidth, assetsRoom) : assetsWidth;
@@ -1157,11 +1187,24 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
     else if (pickedMedia) void addMedia(pickedMedia, { mode, range, atPlayhead: true });
   }, [addMedia, placeSaved, pickedMedia, pickedSaved]);
   /* the media library's basket: each item appended to the end of its track, in the order it was collected */
-  const addBasketToTimeline = React.useCallback(async (items: readonly { path: string; startMs: number; endMs: number }[]) => {
-    let added = 0;
-    for (const item of items) {
+  const addBasketToTimeline = React.useCallback(async (items: readonly { path: string; startMs: number; endMs: number }[], options: { replace?: boolean } = {}) => {
+    const resolved = items.flatMap((item) => {
       const file = allFiles.find((candidate) => candidate.path === item.path);
-      if (!file) continue;
+      return file ? [{ item, file }] : [];
+    });
+    /* A rough-cut handoff replaces the cut it came from: importing it on top of a full assembly
+       would leave every old asset under the new shots. Other basket uses still append. Nothing is
+       cleared when none of the clips can be found (an external library's path, say). */
+    if (!resolved.length) return 0;
+    if (options.replace) {
+      const blocks = timelineTracks.flatMap((track) => track.blocks).filter((block) => block.clipId);
+      if (blocks.length) {
+        const failed = await removeBlocks(blocks);
+        if (failed) return 0;
+      }
+    }
+    let added = 0;
+    for (const { item, file } of resolved) {
       const range = item.endMs > item.startMs && (file.durationMs ?? 0) > item.startMs
         ? { inMs: item.startMs, outMs: Math.min(item.endMs, file.durationMs ?? item.endMs) }
         : null;
@@ -1169,7 +1212,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
       if (await addMedia(file, { atEnd: true, range })) added += 1;
     }
     return added;
-  }, [addMedia, allFiles]);
+  }, [addMedia, allFiles, timelineTracks, removeBlocks]);
   /* clips (and files) kept to use again in any project (lib/saved, studio/server/saved.mjs): the timeline's, the
      picture's and the media pane's "Add to Saved" */
   const saveThings = React.useCallback(async (what: Parameters<typeof api.save>[1], n: number) => {
@@ -1293,10 +1336,14 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
 
   /* ── the app Studio is embedded in (lib/host.ts): what the person points at, handed to it; what it asks to be shown ── */
   const hostPanel = useHostPanel();
+  /* The desktop app brings its own rich chat column (lib/host.ts panel); Studio's browser-only AI pane must never
+     sit beside it as a second, floating conversation. */
+  const nativeChat = Boolean(studioHost?.panel);
+  const aiChatDocked = browserChatOpen;
   /* an app that hosts Studio can keep the media in a drawer of its own panel (window.openfilmHost panel.assets): no
      left pane then, the viewer first on the left */
   const hostAssets = hostPanel?.assets ?? null;
-  const assetsShown = !hostAssets && assetsPaneOpen && assetsFit;
+  const assetsShown = !hostAssets && assetsPaneOpen && assetsFit && !(chatNeedsRoom && layoutWidth < MIN_VIEWER + 280 + 40);
   const layersRoom = rowWidth - (inspectorShown ? inspectorShownWidth : 0) - (assetsShown ? assetsShownWidth : 0) - MIN_VIEWER - 16;
   const layersShownWidth = rowWidth ? Math.min(layersWidth, layersRoom) : layersWidth;
   const layersFit = !rowWidth || layersShownWidth >= 180;
@@ -2676,6 +2723,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
     setHistoryOpen((v) => !v);
   };
   const [exportOpen, setExportOpen] = React.useState(false);
+  const [apiLogsOpen, setApiLogsOpen] = React.useState(false);
   const [exportClipId, setExportClipId] = React.useState<string | null>(null);
   /* the picture's menu is built before this: it reaches export through a ref */
   const exportTrayRef = React.useRef<ExportTrayHandle>(null);
@@ -2779,6 +2827,22 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
                 timeline={timelineOpen} inspector={inspectorOpen}
                 onTimeline={setTimelineOpen} onInspector={setInspectorOpen}
                 hostPanel={hostPanel ? { label: hostPanel.label, open: hostPanel.open, onChange: hostPanel.setOpen } : null} />
+              {workflowStage === 'edit' && hostPanel ? (
+                <Tooltip label="AI 对话" side="bottom">
+                  <button type="button" aria-label="AI 对话" aria-pressed={hostPanel.open}
+                    onClick={() => hostPanel.setOpen(!hostPanel.open)}
+                    className={`${TOP_BTN} ${hostPanel.open ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
+                    <MessageSquare size={16} />
+                  </button>
+                </Tooltip>
+              ) : workflowStage === 'edit' && !nativeChat ? (
+                <Tooltip label="AI 剪辑助手" side="bottom">
+                  <button type="button" aria-label="AI 剪辑助手" aria-pressed={editChatOpen}
+                    onClick={() => setEditChatOpen(!editChatOpen)} className={`${TOP_BTN} ${editChatOpen ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
+                    <Sparkles size={16} />
+                  </button>
+                </Tooltip>
+              ) : null}
               <ProjectHistoryButton open={historyOpen} onClick={openHistory} className={TOP_BTN} />
               <Tooltip label={t('projectMenu.export')} side="bottom">
                 <button type="button" aria-label={t('projectMenu.export')} aria-haspopup="dialog" aria-expanded={exportOpen} className={TOP_BTN}
@@ -2791,7 +2855,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
                 </button>
               </Tooltip>
               {/* in an app's tabs these are in the tab's menu */}
-              {inTabs ? null : <ProjectMenu className={TOP_BTN} onRoughCut={() => setWorkflowStage('roughcut')} onCoverFromFrame={coverFromFrame} onReveal={() => reveal('')} />}
+              {inTabs ? null : <ProjectMenu className={TOP_BTN} onRoughCut={() => setWorkflowStage('roughcut')} onApiLogs={() => setApiLogsOpen(true)} onCoverFromFrame={coverFromFrame} onReveal={() => reveal('')} />}
             </div>
             <div aria-hidden className="shrink-0 self-stretch" style={{ width: 'var(--titlebar-right-x)' }} />
           </div>
@@ -2804,7 +2868,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
           ) : null}
 
           {/* the app's own panel (lib/host.ts `panel`) sits right of this, under the top bar: room left for it */}
-          <section ref={dockColRef} className="relative flex min-h-0 min-w-0 flex-col" style={{ gridArea: 'main', ...(hostPanel?.open ? { marginRight: Math.max(0, hostPanel.width - DOCK_GAP) } : null) }}>
+          <section ref={dockColRef} className="relative flex min-h-0 min-w-0 flex-col" style={{ gridArea: 'main', ...(hostPanel?.open ? { marginRight: Math.max(0, hostPanel.width - DOCK_GAP) } : aiChatDocked ? { marginRight: EDIT_CHAT_WIDTH } : null) }}>
             {workflowStage === 'edit' ? (
               <>
             <div ref={viewerRowRef} className="relative flex min-h-0 min-w-0 flex-1 flex-row">
@@ -3186,6 +3250,12 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
                 <div className="absolute inset-y-0 right-0"><AudioMeters levels={tools.levels} playing={playing} /></div>
               </div>
             ) : null}
+            {aiChatDocked ? (
+              <div className="fixed z-40" data-edit-ai-chat=""
+                style={{ top: HOST_PANEL_TOP, right: DOCK_GAP, bottom: DOCK_GAP, width: EDIT_CHAT_WIDTH }}>
+                <EditChatPanel projectId={projectId} onClose={() => setEditChatOpen(false)} />
+              </div>
+            ) : null}
               </>
             ) : workflowStage === 'media' ? (
               /* the media library step: its own command bar, grid, inspector and basket */
@@ -3212,6 +3282,18 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
                 listing={listing}
                 sources={mediaSources}
                 onAddToTimeline={addBasketToTimeline}
+                onHandoffComplete={async (subtitles) => {
+                  if (!subtitles) return;
+                  try {
+                    toast.show('正在根据粗剪对白生成字幕…');
+                    const result = await subs.transcribe();
+                    if (result.ok) toast.show('已根据粗剪对白生成字幕');
+                    else if (result.needsTranscriber) toast.show('粗剪已导入剪辑；未配置语音识别，字幕可稍后在剪辑页生成。');
+                    else toast.showError(result.error ?? '字幕生成失败，请检查语音识别服务');
+                  } catch (e) {
+                    toast.showError(e instanceof Error ? e.message : String(e));
+                  }
+                }}
                 onEnterEdit={() => setWorkflowStage('edit')}
                 onSettings={() => onSettings('agents', { projects: projectsOpenRef.current })}
                 notify={(message) => toast.show(message)}
@@ -3244,6 +3326,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
         </div>
       </div>
 
+      <ApiLogWindow open={apiLogsOpen} onClose={() => setApiLogsOpen(false)} />
       <ProjectHistoryControls projectId={projectId} history={history} open={historyOpen} anchor={historyAnchor} onClose={() => setHistoryOpen(false)} />
       <ProjectsPopover open={projectsOpen} currentProjectId={projectId} onOpen={(id) => { if (!studioHost?.tabs) setProjectsOpen(false); onProject(id); }} onCurrentRemoved={onLeave} onClose={() => setProjectsOpen(false)} />
       {examplesOpen ? (

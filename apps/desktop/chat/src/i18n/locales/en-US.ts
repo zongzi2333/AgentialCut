@@ -391,6 +391,13 @@ export const enUS = {
   agentRef: {
     track: 'Track {n}',
   },
+  /** the chat's first moment: the bridge is still answering, or it did not (chat/src/mount.tsx) */
+  boot: {
+    starting: 'Opening the AI chat…',
+    unavailable: 'AI chat is unavailable',
+    retry: 'Try again',
+    timeout: 'The chat connection took too long.',
+  },
   /** what a turn changed in the project's files, under its reply (components/FileChangesList) */
   fileChanges: {
     more: '{n} more files',

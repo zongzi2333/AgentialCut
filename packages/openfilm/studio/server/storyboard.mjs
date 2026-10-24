@@ -284,7 +284,7 @@ export function localStoryboard(/** @type {{ name?: string }} */ project, /** @t
     shots,
     source: 'local',
   }, project);
-  return scaleDuration(doc, brief.durationMs);
+  return distributeDurations(doc, brief.durationMs);
 }
 
 function paragraphs(/** @type {string} */ text) {
@@ -311,6 +311,33 @@ function splitShots(/** @type {string} */ text) {
   return sentences.length > 1 ? sentences : [text];
 }
 
+/**
+ * Give each shot a length by what it carries, not by an equal split: a line of dialogue and a
+ * visual beat are not the same job. The opening and closing shots get a little breathing room;
+ * long narration/visual requirements earn more time. The total still equals the brief.
+ */
+export function distributeDurations(/** @type {Storyboard} */ doc, /** @type {number} */ durationMs) {
+  const total = Math.max(1000, Math.min(3_600_000, Math.round(durationMs)));
+  doc.brief.durationMs = total;
+  if (!doc.shots.length) return doc;
+  const min = 1000;
+  const weights = doc.shots.map((shot, index) => {
+    const text = `${shot.narration} ${shot.visualIntent} ${shot.title}`.trim();
+    const opening = index === 0 ? 0.35 : 0;
+    const closing = index === doc.shots.length - 1 ? 0.25 : 0;
+    return 1 + Math.min(2.4, text.length / 70) + opening + closing;
+  });
+  const sum = weights.reduce((all, weight) => all + weight, 0) || 1;
+  let left = total;
+  doc.shots.forEach((shot, index) => {
+    const last = index === doc.shots.length - 1;
+    const share = last ? left : Math.max(min, Math.round((weights[index] / sum) * total));
+    shot.targetMs = Math.max(500, last ? share : Math.min(share, Math.max(500, left - (doc.shots.length - index - 1) * min)));
+    left -= shot.targetMs;
+  });
+  return doc;
+}
+
 /** Scale target lengths so the rough cut lands at `durationMs`, never below half a second. */
 export function scaleDuration(/** @type {Storyboard} */ doc, /** @type {number} */ durationMs) {
   const total = Math.max(1000, Math.min(3_600_000, Math.round(durationMs)));
@@ -335,10 +362,37 @@ export function applyOperations(/** @type {Storyboard} */ doc, /** @type {unknow
   for (const raw of operations) {
     if (!raw || typeof raw !== 'object') throw new HttpError(400, 'a storyboard operation is not an object');
     const op = /** @type {Record<string, any>} */ (raw);
+    /* Models often drop `type`, or use a natural name. Accept the common shapes so one missing key
+       does not throw away an otherwise useful edit; the whole proposal is still validated first. */
+    const rawType = String(op.type ?? op.operation ?? op.action ?? '').trim();
+    const type = ({
+      setshotduration: 'setShotDuration', setduration: 'setShotDuration', setshotlength: 'setShotDuration',
+      updateduration: 'setShotDuration', duration: 'setShotDuration',
+      setshot: 'updateShot', updateshot: 'updateShot', editshot: 'updateShot', modifyshot: 'updateShot',
+      setshotfields: 'updateShot', updateshotfields: 'updateShot', replaceshot: 'updateShot',
+      settitle: 'updateShot', setnarration: 'updateShot', setvisualintent: 'updateShot',
+      removeshot: 'deleteShot', delete: 'deleteShot', remove: 'deleteShot',
+      createshot: 'addShot', insertshot: 'addShot', newshot: 'addShot',
+      moveshot: 'moveShot', reordershot: 'moveShot',
+      duplicateshot: 'duplicateShot', copyshot: 'duplicateShot',
+      clearmatch: 'clearMatch', removematch: 'clearMatch', unmatch: 'clearMatch',
+      distribute: 'distributeDurations', distributedurations: 'distributeDurations',
+      balancdurations: 'distributeDurations', balancetiming: 'distributeDurations',
+      rematch: 'rematchShots', rematchshot: 'rematchShots', markstale: 'rematchShots',
+      setscene: 'updateScene', updatescene: 'updateScene',
+      addscene: 'addScene', createscene: 'addScene',
+      lockshots: 'lockShots', lock: 'lockShots',
+    })[rawType.toLowerCase()] ?? rawType;
+    const inferred = !type
+      ? (op.shotIds ? 'reorderShots' : op.brief ? 'setBrief' : op.scene ? 'addScene' : op.shot ? 'addShot'
+        : op.candidateId ? 'setMatch' : op.patch || op.shotId ? 'updateShot' : op.durationMs ? 'setTargetDuration' : '')
+      : type;
+    if (!inferred) throw new HttpError(400, `unknown storyboard operation: ${String(op.type ?? 'missing type')}`);
+    const kind = inferred;
     const shot = op.shotId ? next.shots.find((item) => item.id === String(op.shotId)) : null;
-    switch (op.type) {
+    switch (kind) {
       case 'setBrief': {
-        const brief = op.brief && typeof op.brief === 'object' ? op.brief : {};
+        const brief = op.brief && typeof op.brief === 'object' ? op.brief : op;
         if (brief.durationMs != null) next.brief.durationMs = integer(brief.durationMs, next.brief.durationMs, 1000, 3_600_000);
         if (brief.aspect != null) next.brief.aspect = clean(brief.aspect, 20) || next.brief.aspect;
         if (brief.tone != null) next.brief.tone = clean(brief.tone, 200);
@@ -346,18 +400,27 @@ export function applyOperations(/** @type {Storyboard} */ doc, /** @type {unknow
         break;
       }
       case 'setTargetDuration':
-        scaleDuration(next, integer(op.durationMs, next.brief.durationMs, 1000, 3_600_000));
+        scaleDuration(next, integer(op.durationMs ?? op.targetDuration, next.brief.durationMs, 1000, 3_600_000));
         break;
+      case 'distributeDurations':
+        distributeDurations(next, integer(op.durationMs ?? op.targetDuration, next.brief.durationMs, 1000, 3_600_000));
+        break;
+      case 'setShotDuration': {
+        if (!shot) throw new HttpError(404, 'no such shot');
+        if (shot.locked) throw new HttpError(409, 'that shot is locked');
+        shot.targetMs = integer(op.targetMs ?? op.durationMs ?? op.duration, shot.targetMs, 500, 120_000);
+        break;
+      }
       case 'updateShot': {
         if (!shot) throw new HttpError(404, 'no such shot');
         if (shot.locked) throw new HttpError(409, 'that shot is locked');
-        const patch = op.patch && typeof op.patch === 'object' ? op.patch : {};
+        const patch = op.patch && typeof op.patch === 'object' ? op.patch : op;
         if (patch.title != null) shot.title = clean(patch.title, 200) || shot.title;
         if (patch.narration != null) shot.narration = clean(patch.narration, 4000);
         if (patch.visualIntent != null) shot.visualIntent = clean(patch.visualIntent, 2000);
         if (patch.must != null) shot.must = textList(patch.must);
         if (patch.avoid != null) shot.avoid = textList(patch.avoid);
-        if (patch.targetMs != null) shot.targetMs = integer(patch.targetMs, shot.targetMs, 500, 120_000);
+        if (patch.targetMs != null || patch.durationMs != null) shot.targetMs = integer(patch.targetMs ?? patch.durationMs, shot.targetMs, 500, 120_000);
         if (patch.locked != null) shot.locked = Boolean(patch.locked);
         if (patch.generated != null) shot.generated = Boolean(patch.generated);
         if (['title', 'narration', 'visualIntent', 'must', 'avoid'].some((key) => key in patch)) {
@@ -366,11 +429,17 @@ export function applyOperations(/** @type {Storyboard} */ doc, /** @type {unknow
         break;
       }
       case 'addShot': {
-        const input = op.shot && typeof op.shot === 'object' ? op.shot : {};
+        const input = op.shot && typeof op.shot === 'object' ? op.shot : op;
         const sceneId = next.scenes.some((scene) => scene.id === String(op.sceneId)) ? String(op.sceneId) : next.scenes[0]?.id;
         if (!sceneId) throw new HttpError(409, 'add a scene before a shot');
         const at = op.index == null ? next.shots.length : Math.max(0, Math.min(next.shots.length, integer(op.index, next.shots.length, 0, MAX_SHOTS)));
         next.shots.splice(at, 0, normalizeShot({ ...input, sceneId }, next.shots.length));
+        break;
+      }
+      case 'duplicateShot': {
+        if (!shot) throw new HttpError(404, 'no such shot');
+        const copy = { ...normalizeShot({ ...shot, id: '', locked: false }, next.shots.length), sceneId: shot.sceneId, match: { ...shot.match, candidates: [...shot.match.candidates], selectedId: shot.match.selectedId } };
+        next.shots.splice(shot.order + 1, 0, copy);
         break;
       }
       case 'deleteShot':
@@ -387,6 +456,13 @@ export function applyOperations(/** @type {Storyboard} */ doc, /** @type {unknow
         next.shots = ids.map((one) => /** @type {StoryboardShot} */ (byId.get(one)));
         break;
       }
+      case 'moveShot': {
+        if (!shot) throw new HttpError(404, 'no such shot');
+        const to = Math.max(0, Math.min(next.shots.length - 1, integer(op.index ?? op.toIndex ?? op.to, shot.order, 0, MAX_SHOTS)));
+        const [moved] = next.shots.splice(shot.order, 1);
+        next.shots.splice(to, 0, moved);
+        break;
+      }
       case 'setMatch': {
         if (!shot) throw new HttpError(404, 'no such shot');
         if (shot.locked) throw new HttpError(409, 'that shot is locked');
@@ -395,8 +471,39 @@ export function applyOperations(/** @type {Storyboard} */ doc, /** @type {unknow
         shot.match = { ...shot.match, selectedId: candidate.id, confidence: Math.round(within(candidate.score) * 100), state: candidate.score < REVIEW_SCORE ? 'review' : 'matched' };
         break;
       }
+      case 'clearMatch': {
+        if (!shot) throw new HttpError(404, 'no such shot');
+        if (shot.locked) throw new HttpError(409, 'that shot is locked');
+        shot.match = { ...shot.match, selectedId: null, state: 'gap', confidence: 0 };
+        break;
+      }
+      case 'rematchShots': {
+        const ids = Array.isArray(op.shotIds) ? op.shotIds.map(String) : op.shotId ? [String(op.shotId)] : [];
+        const targets = ids.length ? next.shots.filter((item) => ids.includes(item.id)) : next.shots;
+        for (const target of targets) {
+          if (target.locked) continue;
+          target.match = { ...target.match, stale: true };
+        }
+        break;
+      }
+      case 'lockShots': {
+        const ids = Array.isArray(op.shotIds) ? op.shotIds.map(String) : op.shotId ? [String(op.shotId)] : [];
+        for (const target of next.shots.filter((item) => ids.includes(item.id))) target.locked = true;
+        break;
+      }
+      case 'updateScene': {
+        const scene = next.scenes.find((item) => item.id === String(op.sceneId ?? op.id));
+        if (!scene) throw new HttpError(404, 'no such scene');
+        if (op.title != null) scene.title = clean(op.title, 200) || scene.title;
+        break;
+      }
+      case 'addScene': {
+        const count = next.scenes.length;
+        next.scenes.push({ id: id('sc'), title: clean(op.title, 200) || `Scene ${count + 1}`, order: count });
+        break;
+      }
       default:
-        throw new HttpError(400, `unknown storyboard operation: ${String(op.type)}`);
+        throw new HttpError(400, `unknown storyboard operation: ${String(op.type ?? kind)}`);
     }
   }
   next.shots.forEach((shot, index) => { shot.order = index; });
@@ -502,13 +609,18 @@ export function handoffClips(/** @type {Storyboard} */ doc) {
       gaps.push(shot.id);
       continue;
     }
+    /* The rough cut uses the shot's target length from the matched source, not the whole source
+       clip. Importing the candidate's full end (often the entire camera file) was what made a
+       30-second storyboard become minutes of "all the material" on the timeline. */
+    const startMs = Math.max(0, candidate.startMs);
+    const endMs = Math.min(candidate.endMs, startMs + Math.max(500, shot.targetMs));
     clips.push({
       shotId: shot.id,
       path: candidate.path,
       name: candidate.name,
-      startMs: candidate.startMs,
-      endMs: candidate.endMs,
-      durationMs: Math.max(0, candidate.endMs - candidate.startMs),
+      startMs,
+      endMs,
+      durationMs: Math.max(0, endMs - startMs),
     });
   }
   return { clips, gaps };
@@ -533,11 +645,50 @@ export function localProposal(/** @type {Storyboard} */ doc, /** @type {string} 
     const shot = doc.shots[index];
     if (shot) return { reply: `删除第 ${index + 1} 镜“${shot.title}”。`, operations: [{ type: 'deleteShot', shotId: shot.id }] };
   }
+  const retime = /第?\s*(\d+)\s*(?:镜|个镜头)\s*(加长|延长|缩短)\s*(\d+(?:\.\d+)?)\s*(?:秒|s)?/i.exec(text);
+  if (retime) {
+    const shot = doc.shots[Number(retime[1]) - 1];
+    if (shot) {
+      const sign = retime[2] === '缩短' ? -1 : 1;
+      const targetMs = Math.max(500, shot.targetMs + sign * Number(retime[3]) * 1000);
+      return { reply: `把第 ${shot.order + 1} 镜调整为 ${(targetMs / 1000).toFixed(1)} 秒。`, operations: [{ type: 'setShotDuration', shotId: shot.id, targetMs }] };
+    }
+  }
+  const opening = /(?:保持|保留)\s*开头\s*(\d+(?:\.\d+)?)\s*(?:秒|s)/i.exec(text);
+  if (opening && doc.shots[0]) {
+    const targetMs = Math.round(Number(opening[1]) * 1000);
+    return { reply: `把开场镜头保持在 ${(targetMs / 1000).toFixed(1)} 秒。`, operations: [{ type: 'setShotDuration', shotId: doc.shots[0].id, targetMs }] };
+  }
+  const keep = /(?:保持|保留)\s*开头\s*([一二三四五六七八九十两\d]+)\s*(?:镜|个镜头)?/i.exec(text);
+  if (keep) {
+    const count = Number(keep[1]) || ({ 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }[keep[1]] ?? 0);
+    const shots = doc.shots.slice(0, Math.max(1, count)).filter((shot) => !shot.locked);
+    return shots.length
+      ? { reply: `锁定开头 ${shots.length} 个镜头，后续修改不会再动它们。`, operations: [{ type: 'lockShots', shotIds: shots.map((shot) => shot.id) }] }
+      : { reply: '开头镜头已经锁定，不需要再改。', operations: [] };
+  }
+  if (/(重复|雷同|相似)/.test(text) && /(减少|去重|合并|删)/.test(text)) {
+    const seen = new Set();
+    const removeOps = doc.shots.filter((shot) => {
+      const key = `${shot.title}|${shot.narration}`.replace(/\s+/g, '').toLowerCase();
+      if (!key || !seen.has(key)) { seen.add(key); return false; }
+      return !shot.locked;
+    }).map((shot) => ({ type: 'deleteShot', shotId: shot.id }));
+    return removeOps.length
+      ? { reply: `按标题和旁白去重，删掉 ${removeOps.length} 个重复镜头。`, operations: removeOps }
+      : { reply: '没有发现可安全删除的重复镜头；锁定镜头保持不动。', operations: [] };
+  }
+  if (/(时长|长短|节奏|分配|自行决定|你决定)/.test(text)) {
+    return {
+      reply: `按内容主次重新分配 ${doc.shots.length} 个镜头的长度，总时长保持 ${(doc.brief.durationMs / 1000).toFixed(1)} 秒。`,
+      operations: [{ type: 'distributeDurations', durationMs: doc.brief.durationMs }],
+    };
+  }
   if (/匹配|找素材|补齐/.test(text)) {
     return { reply: '这一步需要先选中镜头，再点击“精确匹配”；候选会留在素材架里让你选择。', operations: [], intent: 'match' };
   }
   return {
-    reply: '我可以改时长、删除镜头或给出调整建议。先告诉我目标时长，或指定某一镜要改什么。',
+    reply: '我可以直接改时长、调整各镜长短、删除重复镜头或修改镜头内容。直接说“按内容分配时长”或“减少重复镜头”即可。',
     operations: [],
   };
 }

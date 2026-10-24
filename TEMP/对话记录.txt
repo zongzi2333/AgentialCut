@@ -9,3 +9,8 @@ AI分镜错误
 
 保持开头三镜
 unknown storyboard operation: undefined
+
+根据各分镜内容自行调整时长
+AI已按内容重排节奏：开头高铁静水与高速水杯各留3.5秒稳住悬念，轮胎升格与路面中近景各3秒加快，激光仪读数给4.5秒看清曲线，A4纸分屏5秒，结尾航拍落版7.5秒收住，总长30秒不变。
+这次修改没有通过校验，分镜未改变。
+This storyboard changed in another window. Reload it before applying.

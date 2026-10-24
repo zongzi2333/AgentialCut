@@ -13,6 +13,7 @@ import type { Example } from '@/lib/project-sources';
 import { ExamplesSection } from './ProjectSources';
 import { useLanguage, useT, type Language } from '@/i18n';
 import { limitTitleWidth, TITLE_MAX_WIDTH } from '@/lib/title';
+import { useDismissOutside } from '@/lib/use-dismiss-outside';
 import { api, type Project } from '@/api';
 import { folderCounts, folderPosters, folderTrail, listStarts, parentOf, visibleProjects, type LibrarySort, type ProjectFolder } from '@/lib/project-folders';
 import { opensOnClick, posterRetryDelay, posterTry } from '@/lib/projects-page';
@@ -198,6 +199,7 @@ export function ProjectsView({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [selecting, exitSelecting]);
+  useDismissOutside(selectedIds.size > 0, () => setSelectedIds(new Set()), '[data-project-card], [data-folder-card]');
 
   function toggleSelected(id: string) {
     lastAnchor.current = id;
@@ -763,7 +765,7 @@ function ProjectCard({
   const language = useLanguage();
   const open = selecting ? onToggleSelect : onOpen;
   return (
-    <article className="group min-w-0">
+    <article data-project-card className="group min-w-0">
       <div className="relative">
         <button
           type="button"
@@ -1040,7 +1042,7 @@ function FolderCard({
   const t = useT();
   const language = useLanguage();
   return (
-    <article className="group min-w-0">
+    <article data-folder-card className="group min-w-0">
       <button
         type="button"
         onClick={onOpen}

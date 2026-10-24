@@ -1,0 +1,39 @@
+<mxfile host="app.diagrams.net" modified="2026-10-24T00:00:00.000Z" agent="OpenCode" version="24.7.17" type="device">
+  <diagram id="pavo-agent-map" name="Pavo Agent 原始提示词与关联">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/><mxCell id="1" parent="0"/>
+        <mxCell id="input" value="故事输入" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f1ff;strokeColor=#4a78c2;fontSize=14;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="40" y="200" width="120" height="60" as="geometry"/></mxCell>
+        <mxCell id="planner" value="Planner&lt;br&gt;故事分析" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="1"><mxGeometry x="220" y="60" width="150" height="60" as="geometry"/></mxCell>
+        <mxCell id="character" value="Character&lt;br&gt;角色设计" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f5e8;strokeColor=#5b9b70;fontSize=13;" vertex="1" parent="1"><mxGeometry x="220" y="140" width="150" height="60" as="geometry"/></mxCell>
+        <mxCell id="scene" value="Scene&lt;br&gt;场景设计" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f5e8;strokeColor=#5b9b70;fontSize=13;" vertex="1" parent="1"><mxGeometry x="220" y="220" width="150" height="60" as="geometry"/></mxCell>
+        <mxCell id="prop" value="Prop&lt;br&gt;道具设计" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f5e8;strokeColor=#5b9b70;fontSize=13;" vertex="1" parent="1"><mxGeometry x="220" y="300" width="150" height="60" as="geometry"/></mxCell>
+        <mxCell id="storyboard" value="Storyboard&lt;br&gt;逐镜头分镜" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce4ec;strokeColor=#c45b76;fontSize=13;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="220" y="380" width="150" height="70" as="geometry"/></mxCell>
+        <mxCell id="reviewer" value="Reviewer&lt;br&gt;文本质量审查" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#7e57c2;fontSize=13;" vertex="1" parent="1"><mxGeometry x="440" y="380" width="150" height="70" as="geometry"/></mxCell>
+        <mxCell id="fixer" value="Fixer&lt;br&gt;修复分镜" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#7e57c2;fontSize=13;" vertex="1" parent="1"><mxGeometry x="440" y="490" width="150" height="60" as="geometry"/></mxCell>
+        <mxCell id="human" value="人工分镜调整&lt;br&gt;reorder(shots)&lt;br&gt;set_duration(shot, sec)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#777;fontSize=12;" vertex="1" parent="1"><mxGeometry x="660" y="380" width="190" height="80" as="geometry"/></mxCell>
+        <mxCell id="prompt" value="T2V Prompt Builder&lt;br&gt;shot → prompt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="1"><mxGeometry x="900" y="380" width="170" height="80" as="geometry"/></mxCell>
+        <mxCell id="t2v" value="[[视频模型黑箱]]&lt;br&gt;generate_video(prompt) → url" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f5e8;strokeColor=#5b9b70;strokeWidth=3;fontSize=12;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1120" y="380" width="220" height="80" as="geometry"/></mxCell>
+        <mxCell id="clips" value="逐镜视频片段&lt;br&gt;videos[]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f1ff;strokeColor=#4a78c2;fontSize=13;" vertex="1" parent="1"><mxGeometry x="1380" y="380" width="150" height="80" as="geometry"/></mxCell>
+        <mxCell id="llm" value="[[LLM 黑箱]]&lt;br&gt;chat(messages, temperature, max_tokens) → text&lt;br&gt;structured(messages) → JSON" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=3;fontSize=12;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="40" y="620" width="330" height="100" as="geometry"/></mxCell>
+        <mxCell id="store" value="[[项目存储黑箱]]&lt;br&gt;create / read / update(module) / snapshot(version)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede7f6;strokeColor=#7e57c2;strokeWidth=3;fontSize=12;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="440" y="620" width="360" height="100" as="geometry"/></mxCell>
+        <mxCell id="memory" value="[[Memory / RAG 黑箱]]&lt;br&gt;search(user_id, query) / save(memory)&lt;br&gt;仅 MCP 旁路" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#777;strokeWidth=3;fontSize=12;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="860" y="620" width="360" height="100" as="geometry"/></mxCell>
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="input" target="planner"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="planner" target="character"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="character" target="scene"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="scene" target="prop"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="prop" target="storyboard"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="storyboard" target="reviewer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" value="needs_fix" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=11;" edge="1" parent="1" source="reviewer" target="fixer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="fixer" target="reviewer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" value="passed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=11;" edge="1" parent="1" source="reviewer" target="human"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="human" target="prompt"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="prompt" target="t2v"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="t2v" target="clips"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e13" value="所有生成角色同一接口" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=none;dashed=1;fontSize=10;" edge="1" parent="1" source="llm" target="storyboard"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e14" value="读写项目 JSON" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=none;dashed=1;fontSize=10;" edge="1" parent="1" source="store" target="storyboard"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e15" value="仅 MCP 调用" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=none;dashed=1;fontSize=10;" edge="1" parent="1" source="memory" target="input"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

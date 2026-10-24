@@ -10,6 +10,7 @@ import { HttpError } from './http.mjs';
 import { cardConnection } from './provider-cards.mjs';
 import { agentFor, agentTarget } from './agent-cards.mjs';
 import { findSkill, skillText } from '../../src/skills.mjs';
+import { beginModelCall, failModelCall, finishModelCall } from './model-log.mjs';
 
 /** @typedef {import('./provider-cards.mjs').ProviderCard} ProviderCard */
 /** @typedef {import('./provider-cards.mjs').Connection} Connection */
@@ -58,8 +59,23 @@ async function fetchJson(/** @type {string} */ service, /** @type {string} */ ur
   try { return JSON.parse(body); } catch { throw new HttpError(502, `${service} 返回的不是 JSON`); }
 }
 
+/** The token counts a protocol reports, in one shape. */
+function usageOf(/** @type {any} */ body) {
+  const usage = body?.usage ?? body?.usageMetadata;
+  if (!usage || typeof usage !== 'object') return null;
+  const input = Number(usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokenCount);
+  const output = Number(usage.output_tokens ?? usage.completion_tokens ?? usage.candidatesTokenCount);
+  const total = Number(usage.total_tokens ?? usage.totalTokenCount);
+  if (![input, output, total].some(Number.isFinite)) return null;
+  return {
+    ...(Number.isFinite(input) ? { input } : {}),
+    ...(Number.isFinite(output) ? { output } : {}),
+    ...(Number.isFinite(total) ? { total } : Number.isFinite(input) && Number.isFinite(output) ? { total: input + output } : {}),
+  };
+}
+
 /** One model call through its card's protocol. */
-export async function callCard(/** @type {ProviderCard} */ card, /** @type {Connection} */ connection, /** @type {CardModel} */ model, /** @type {ChatMessage[]} */ messages, /** @type {{ systemPrompt?: string, temperature?: number, maxTokens?: number, topP?: number, signal?: AbortSignal }} */ options = {}) {
+async function callCardOnce(/** @type {ProviderCard} */ card, /** @type {Connection} */ connection, /** @type {CardModel} */ model, /** @type {ChatMessage[]} */ messages, /** @type {{ systemPrompt?: string, temperature?: number, maxTokens?: number, topP?: number, signal?: AbortSignal }} */ options = {}) {
   const key = connectionKey(connection);
   if (connection.auth !== 'none' && !key) throw new HttpError(409, `“${card.name}”还没有设置 API Key`);
   const system = (options.systemPrompt ?? '').trim();
@@ -78,7 +94,7 @@ export async function callCard(/** @type {ProviderCard} */ card, /** @type {Conn
     }, key, timeout);
     const content = Array.isArray(body?.content) ? body.content.map((/** @type {any} */ part) => part?.text ?? '').join('') : body?.content;
     if (typeof content !== 'string' || !content.trim()) throw new HttpError(502, '模型没有返回内容');
-    return content;
+    return { content, usage: usageOf(body) };
   }
   if (card.protocol === 'gemini-generate') {
     const url = `${endpoint(connection.baseUrl, '')}/models/${encodeURIComponent(model.remoteName || model.id)}:generateContent?key=${encodeURIComponent(key)}`;
@@ -93,7 +109,7 @@ export async function callCard(/** @type {ProviderCard} */ card, /** @type {Conn
     }, key, timeout);
     const content = body?.candidates?.[0]?.content?.parts?.map((/** @type {any} */ part) => part?.text ?? '').join('');
     if (typeof content !== 'string' || !content.trim()) throw new HttpError(502, '模型没有返回内容');
-    return content;
+    return { content, usage: usageOf(body) };
   }
   if (card.protocol === 'openai-responses') {
     const url = endpoint(connection.baseUrl, '/responses');
@@ -104,7 +120,7 @@ export async function callCard(/** @type {ProviderCard} */ card, /** @type {Conn
     }, key, timeout);
     const content = body?.output_text ?? body?.output?.flatMap((/** @type {any} */ item) => item?.content ?? []).map((/** @type {any} */ part) => part?.text ?? '').join('');
     if (typeof content !== 'string' || !content.trim()) throw new HttpError(502, '模型没有返回内容');
-    return content;
+    return { content, usage: usageOf(body) };
   }
   /* OpenAI Chat Completions; aliases and local OpenAI-compatible servers use this too. */
   const path = card.protocol === 'openai-chat' || card.protocol === 'openai-chat-search' || !card.protocol ? '/chat/completions' : `/${card.protocol}`;
@@ -125,9 +141,35 @@ export async function callCard(/** @type {ProviderCard} */ card, /** @type {Conn
   }, key, timeout);
   const content = body?.choices?.[0]?.message?.content ?? body?.choices?.[0]?.text ?? body?.message?.content;
   if (typeof content !== 'string' || !content.trim()) throw new HttpError(502, '模型没有返回内容');
-  return content;
+  return { content, usage: usageOf(body) };
 }
 
+/** A card call with the developer's model log around it. */
+export async function callCard(
+  /** @type {ProviderCard} */ card,
+  /** @type {Connection} */ connection,
+  /** @type {CardModel} */ model,
+  /** @type {ChatMessage[]} */ messages,
+  /** @type {{ systemPrompt?: string, temperature?: number, maxTokens?: number, topP?: number, signal?: AbortSignal, log?: { role?: string, agent?: string } }} */ options = {},
+) {
+  const id = beginModelCall({
+    role: options.log?.role ?? 'model',
+    agent: options.log?.agent ?? '',
+    provider: card.name || card.vendorId,
+    model: model.remoteName || model.id,
+    protocol: card.protocol || 'openai-chat',
+    system: options.systemPrompt ?? '',
+    messages,
+  });
+  try {
+    const result = await callCardOnce(card, connection, model, messages, options);
+    finishModelCall(id, { reply: result.content, usage: result.usage });
+    return result.content;
+  } catch (error) {
+    failModelCall(id, error);
+    throw error;
+  }
+}
 /** A short test against a card's current (possibly unsaved) connection/model. */
 export async function testConnection(/** @type {{ protocol?: string, category?: string, models?: CardModel[], modelId?: string, baseUrl?: string, key?: string, auth?: 'bearer' | 'api-key' | 'none', authHeader?: string, headers?: Record<string, string> }} */ input) {
   if (input.protocol === 'local-clip') return { ok: true, elapsedMs: 0, detail: '由本地索引 sidecar 提供' };
@@ -148,7 +190,7 @@ export async function testConnection(/** @type {{ protocol?: string, category?: 
     const content = await callCard(/** @type {ProviderCard} */ ({
       id: 'test', vendorId: 'test', name: 'Provider', category: input.category === 'vl' ? 'vl' : 'llm', scope: 'cloud',
       protocol: input.protocol || 'openai-chat', connectionId: 'test', models: [], defaultModelId: '', enabled: true, order: 0,
-    }), connection, model ?? { id: 'default', name: 'Default' }, [{ role: 'user', content: 'Reply with exactly: OK' }], { temperature: 0, maxTokens: 32, topP: 1 });
+    }), connection, model ?? { id: 'default', name: 'Default' }, [{ role: 'user', content: 'Reply with exactly: OK' }], { temperature: 0, maxTokens: 32, topP: 1, log: { role: 'connection test', agent: 'Provider test' } });
     return { ok: true, elapsedMs: Date.now() - started, detail: content.trim().slice(0, 80) };
   }
   /* Media endpoints without a standard cheap probe: check that the address answers at all. */
@@ -197,6 +239,7 @@ export async function callAgent(
     temperature: agent.temperature,
     maxTokens: agent.maxTokens,
     topP: agent.topP,
+    log: { role, agent: agent.name },
   });
 }
 

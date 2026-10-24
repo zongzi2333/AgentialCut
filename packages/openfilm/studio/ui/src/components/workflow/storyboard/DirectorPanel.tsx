@@ -1,18 +1,18 @@
 /**
  * The storyboard's director pane.
  *
- * It is a conversation about a draft, not a second editor. Every structural request comes back as a
- * proposal with a diff-sized summary; the person previews or applies it. The run and history tabs
- * make the agents' work and the applied changes inspectable without inventing a chain-of-thought.
+ * It is a conversation about a draft, not a second editor. A structural request is applied directly
+ * (the storyboard's undo is the safety net); the run and history tabs make the agents' work and the
+ * applied changes inspectable without inventing a chain-of-thought.
  */
 import * as React from 'react';
-import { ArrowUp, Check, Loader2, RotateCcw, Settings2, Sparkles } from 'lucide-react';
+import { ArrowUp, Loader2, RotateCcw, Settings2, Sparkles } from 'lucide-react';
 import { useT } from '@/i18n';
 import type { PipelineRun, StoryboardChatResponse, StoryboardDocument, StoryboardProposal } from '@/api';
 import { PANE_BAR, PANE_BTN, PANE_TITLE } from '../../dock-pane-bar';
 
 type Tab = 'chat' | 'run' | 'history';
-type Message = { id: string; role: 'user' | 'agent'; text: string; proposal?: StoryboardChatResponse };
+type Message = { id: string; role: 'user' | 'agent'; text: string };
 type Applied = { id: string; text: string; at: number };
 
 export function DirectorPanel({
@@ -46,7 +46,6 @@ export function DirectorPanel({
   const [tab, setTab] = React.useState<Tab>('chat');
   const [ask, setAsk] = React.useState('');
   const [messages, setMessages] = React.useState<Message[]>([]);
-  const [proposal, setProposal] = React.useState<{ response: StoryboardChatResponse; messageId: string } | null>(null);
   const [applied, setApplied] = React.useState<Applied[]>([]);
   const [notice, setNotice] = React.useState('');
   const composer = React.useRef<HTMLTextAreaElement>(null);
@@ -70,20 +69,17 @@ export function DirectorPanel({
       setMessages((current) => [...current, { id: `${id}_a`, role: 'agent', text: t('storyboard.error') }]);
       return;
     }
-    setMessages((current) => [...current, { id: `${id}_a`, role: 'agent', text: response.reply, proposal: response }]);
-    if (response.operations.length) setProposal({ response, messageId: `${id}_a` });
+    /* The person asked for a change, not a proposal. Apply it, and let the storyboard undo stack
+       be the safety net; a rejected operation leaves the board untouched. */
+    let appliedNow = false;
+    if (response.operations.length) {
+      appliedNow = await apply(response.proposal, response.operations);
+      if (appliedNow) setApplied((current) => [{ id: response.proposal.id, text: response.reply, at: Date.now() }, ...current].slice(0, 30));
+      setNotice(appliedNow ? '已直接应用，可用上方的撤销按钮恢复。' : '这次修改没有通过校验，分镜未改变。');
+    }
+    setMessages((current) => [...current, { id: `${id}_a`, role: 'agent', text: `${response.reply}${appliedNow ? '（已应用）' : ''}` }]);
     if (response.intent === 'match') await onMatch(selectedIds.length ? [...selectedIds] : undefined);
-  }, [ask, working, selectedIds, chat, t, onMatch, doc?.shots.length, onGenerateFromPrompt]);
-
-  const applyProposal = React.useCallback(async () => {
-    if (!proposal) return;
-    const ok = await apply(proposal.response.proposal, proposal.response.operations);
-    if (!ok) return;
-    setApplied((current) => [{ id: proposal.response.proposal.id, text: proposal.response.reply, at: Date.now() }, ...current].slice(0, 30));
-    setMessages((current) => current.map((message) => message.id === proposal.messageId ? { ...message, proposal: undefined } : message));
-    setProposal(null);
-    setNotice('');
-  }, [proposal, apply]);
+  }, [ask, working, selectedIds, chat, t, onMatch, doc?.shots.length, onGenerateFromPrompt, apply]);
 
   const quick = (text: string) => { setAsk(text); composer.current?.focus(); };
   const contextLabel = selected.length ? t('storyboard.contextSelected').replace('{n}', String(selected.length)) : t('storyboard.contextAll');
@@ -127,28 +123,8 @@ export function DirectorPanel({
             {messages.length ? messages.map((message) => (
               <div key={message.id} className={`rounded-lg border px-2 py-1.5 text-[11px] leading-relaxed ${message.role === 'user' ? 'border-[var(--border)] bg-[var(--bg)] text-[var(--text-muted)]' : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-dim)]'}`}>
                 {message.role === 'agent' ? <strong className="mr-1 text-[var(--text)]">AI</strong> : null}{message.text}
-                {message.proposal?.operations.length ? (
-                  <div className="mt-2 rounded-md border border-[rgba(26,147,254,.35)] bg-[var(--accent-soft)] px-2 py-1.5">
-                    <div className="flex items-center gap-1.5 text-[10px] text-[var(--text)]"><Sparkles size={11} className="text-[var(--accent)]" />{t('storyboard.proposal')}</div>
-                    <div className="mt-0.5 text-[10px] text-[var(--text-faint)]">{t('storyboard.affects').replace('{n}', String(message.proposal.operations.filter((op) => op.shotId).length || 1))}</div>
-                  </div>
-                ) : null}
               </div>
             )) : <p className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-2.5 text-[11px] leading-relaxed text-[var(--text-muted)]">{t('storyboard.generateHint')}</p>}
-
-            {proposal ? (
-              <div className="overflow-hidden rounded-lg border border-[rgba(26,147,254,.38)] bg-[linear-gradient(180deg,rgba(26,147,254,.07),rgba(26,147,254,.015))]">
-                <div className="flex items-center gap-1.5 px-2.5 pt-2 text-[11px] text-[var(--text)]"><Sparkles size={12} className="text-[var(--accent)]" />{t('storyboard.proposal')}</div>
-                <p className="px-2.5 pt-1 text-[10.5px] leading-relaxed text-[var(--text-muted)]">{proposal.response.reply}</p>
-                <div className="mt-2 flex items-center gap-1.5 border-t border-[rgba(26,147,254,.15)] px-2 py-1.5">
-                  <button type="button" onClick={() => setProposal(null)} className="h-6 rounded-md px-2 text-[10px] text-[var(--text-muted)] ring-1 ring-inset ring-[var(--border)]">{t('storyboard.reject')}</button>
-                  <button type="button" onClick={() => void applyProposal()} disabled={working}
-                    className="ml-auto flex h-6 items-center gap-1 rounded-md bg-[var(--text)] px-2 text-[10px] font-medium text-[var(--panel)] disabled:opacity-40">
-                    {working ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}{t('storyboard.apply')}
-                  </button>
-                </div>
-              </div>
-            ) : null}
 
             <div className="flex flex-wrap gap-1">
               {['压缩到 30 秒', '补齐缺镜', '减少重复镜头', '保持开头三镜'].map((one) => (

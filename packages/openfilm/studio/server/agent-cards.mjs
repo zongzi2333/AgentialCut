@@ -42,13 +42,19 @@ const DEFAULT_PROMPTS = /** @type {Record<AgentRole, string>} */ ({
   storyboard: `你是 OpenFilm 的分镜规划 Agent。把输入的脚本、简报或一句话拆成可拍摄、可匹配素材的分镜。
 只返回 JSON，字段为 title、brief、scenes、shots。每个 shot 要有 title、narration、visualIntent、must、avoid、targetMs。
 保持原文事实和顺序，不编造台词；画面要求要具体，写清景别、环境、动作和不能出现的内容。没有素材依据时不要假装已经匹配。`,
-  director: `你是 OpenFilm 的导演 Agent。你只把用户的修改意图翻译成受控编辑提案，不直接修改项目。
-只返回 JSON：{"reply":"简短中文说明","operations":[]}。允许的操作：setTargetDuration、updateShot、deleteShot、reorderShots、addShot、setMatch。
-不得修改锁定镜头，不得编造素材路径；无法执行的要求在 reply 里说明。`,
+  director: `你是 OpenFilm 的导演 Agent。用户已经授权你直接修改分镜，系统会用撤销兜底，所以不要只给提案，也不要把“要不要改”问回给用户。
+只返回 JSON：{"reply":"简短中文说明","operations":[],"intent":"edit|match|none"}。每条操作都必须有 type。允许的操作：
+setTargetDuration {durationMs}；distributeDurations {durationMs?}（按内容自行分配长短镜头）；setShotDuration {shotId,targetMs}；
+updateShot {shotId,patch}；deleteShot {shotId}；duplicateShot {shotId}；reorderShots {shotIds}；moveShot {shotId,index}；
+addShot {sceneId?,index?,shot}；addScene {title}；updateScene {sceneId,title}；setMatch {shotId,candidateId}；clearMatch {shotId}；
+rematchShots {shotIds?}；setBrief {brief}。
+用户说“你决定时长/调整节奏/减少重复/保持开头”等要求时，直接根据内容生成完整 operations，不要要求用户再指定秒数或镜头。
+不得修改锁定镜头，不得编造素材路径；确实无法执行的要求才在 reply 里说明。`,
   query: `你是 OpenFilm 的检索规划 Agent。为每个镜头生成 1-3 条适合视觉语义检索的中文查询，并提取必须满足、必须避免、时长范围、景别和运镜条件。
 查询要具体到画面，不要只复述旁白。只返回可解析的 JSON。`,
   verify: `你是 OpenFilm 的画面审核 Agent。根据镜头的画面意图、必须/避免条件和候选视频的关键帧，判断候选是否适合。
-只返回 JSON：verdict（pass / uncertain / fail）、confidence（0-1）、reason 和 issues。不要因为分数高就通过，也不要伪造你没有看到的画面。`,
+只返回 JSON：{"candidates":[{"index":1,"verdict":"pass | uncertain | fail","confidence":0,"reason":"简短理由","desc":"一到两句中文，描述这个候选画面实际能看到的内容"}]}。
+desc 只写画面里真实可见的主体、环境、动作、景别和氛围，不要编造；不要因为分数高就通过，也不要伪造你没有看到的画面。`,
   continuity: `你是 OpenFilm 的连续性与装配 Agent。检查相邻镜头的景别、运镜、人物方向、重复素材、节奏和目标时长。
 只提出可执行的调整建议，不伪造素材，不修改锁定镜头。输出简洁的 JSON 或逐条问题清单。`,
 });
@@ -91,7 +97,14 @@ export function normalizeState(/** @type {unknown} */ input) {
       order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
       cardId: text(item.cardId, 80),
       modelId: text(item.modelId, 200),
-      systemPrompt: text(item.systemPrompt, 30_000) || (role ? DEFAULT_PROMPTS[role] : ''),
+      systemPrompt: (() => {
+        const asked = text(item.systemPrompt, 30_000);
+        /* the old default told the director to propose, not edit: people who never changed it get
+           the direct-edit default, while a custom prompt is kept untouched */
+        if (role === 'director' && (!asked || /不直接修改项目|受控编辑提案/.test(asked))) return DEFAULT_PROMPTS.director;
+        if (role === 'verify' && (!asked || (asked.includes('你是 OpenFilm 的画面审核 Agent') && !asked.includes('desc')))) return DEFAULT_PROMPTS.verify;
+        return asked || (role ? DEFAULT_PROMPTS[role] : '');
+      })(),
       temperature: number(item.temperature, 0.2, 0, 2),
       maxTokens: Math.round(number(item.maxTokens, 3000, 64, 200_000)),
       topP: number(item.topP, 0.9, 0.01, 1),

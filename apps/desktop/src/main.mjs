@@ -141,7 +141,14 @@ function guard(contents, allowed) {
 }
 
 /** IPC only from a tab's page, its own main frame. */
-const fromPage = (event) => tabOf(event.sender) != null && event.senderFrame === event.sender.mainFrame;
+const fromPage = (event) => {
+  const contents = event.sender;
+  if (tabOf(contents) == null) return false;
+  /* Main frame only. `senderFrame` is the same object on Electron's versions that report it; when a version does
+     not (or it is already gone), the preload exists only in the main frame, so the tab check above is the boundary. */
+  const frame = event.senderFrame;
+  return !frame || frame === contents.mainFrame;
+};
 
 /** A page for a tab: Studio's editor at its project (or its launcher), on Studio's origin. */
 function makeView(tabId) {

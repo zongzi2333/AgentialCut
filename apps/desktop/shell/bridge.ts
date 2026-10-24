@@ -70,14 +70,22 @@ const assetsSignal = signal(false);
 const chatOpenSignal = signal(true);
 
 /** The column's width as the window allows it: Studio keeps its least width, the chat its own while it fits. */
-const shownWidth = () => (layout.open ? Math.max(Math.min(layout.width, innerWidth - layout.studioMin), Math.min(layout.min, innerWidth)) : 0);
+const viewportWidth = () => innerWidth || document.documentElement?.clientWidth || (layout.width + layout.studioMin);
+const shownWidth = () => {
+  if (!layout.open) return 0;
+  const viewport = viewportWidth();
+  return Math.max(Math.min(layout.width, viewport - layout.studioMin), Math.min(layout.min, viewport));
+};
 const panelState = () => ({ open: layout.open, width: shownWidth(), assets: { open: assets.open && layout.open, bottom: assets.bottom } });
 const panelListeners = new Set<Listener<ReturnType<typeof panelState>>>();
 
 /** The page shows a project (not a new tab's launcher): only then is there a chat to show. */
 const onProject = () => /^\/projects\/[\w-]+/.test(location.pathname);
+/** Kept from the last address change: an address read during a redirect or a blank first paint is not a reason to
+    hide the chat for good. */
+let visibleProject = onProject();
 function place() {
-  column.hidden = !layout.open || !onProject();
+  column.hidden = !layout.open || !visibleProject;
   column.style.width = `${shownWidth()}px`;
   column.style.top = `${TOP_BAR}px`;
   /* the column never moves or resizes for the assets: the chat shows only its composer then, and the rest of the
@@ -87,6 +95,7 @@ function place() {
   for (const listener of panelListeners) listener(state);
 }
 addEventListener('resize', place);
+addEventListener('pageshow', place);
 
 function setChatOpen(open: boolean) {
   if (open === layout.open) return;
@@ -158,9 +167,9 @@ async function follow() {
 }
 for (const method of ['pushState', 'replaceState'] as const) {
   const original = history[method].bind(history);
-  history[method] = (...args: Parameters<History['pushState']>) => { original(...args); projectReady = follow(); place(); };
+  history[method] = (...args: Parameters<History['pushState']>) => { original(...args); visibleProject = onProject(); projectReady = follow(); place(); };
 }
-addEventListener('popstate', () => { projectReady = follow(); place(); });
+addEventListener('popstate', () => { visibleProject = onProject(); projectReady = follow(); place(); });
 projectReady = follow();
 
 /* ── between Studio and the chat: what is selected, what is referenced, what Studio is asked to show ── */
@@ -312,6 +321,9 @@ const ready = hello.then((h) => {
   fullScreen.set(h.fullScreen);
   chatOpenSignal.set(layout.open);
   place();
+  /* the window may not have its final size on the first frame; one more after layout keeps the column from an
+     early zero width */
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(place);
   return h;
 });
 

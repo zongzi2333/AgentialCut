@@ -5,6 +5,7 @@
  * longer list a select.
  */
 import React from 'react';
+import { NumberInput, type NumberInputProps } from '../NumberInput';
 
 /** A section's body: an optional note, then its groups. */
 export function SettingsPage({ note, children }: { note?: React.ReactNode; children: React.ReactNode }) {
@@ -129,6 +130,14 @@ export const SettingsField = React.forwardRef<HTMLInputElement, React.InputHTMLA
       className={`h-10 w-full min-w-0 rounded-[8px] border border-[var(--border)] bg-transparent px-3 text-[14px] text-[var(--text)] outline-none transition placeholder:text-[var(--text-faint)] hover:border-[var(--border-strong)] focus:border-[var(--text-muted)] ${className}`} />
   );
 });
+
+/** The same field, but numbers can be typed without being clamped on the first keystroke. */
+export function SettingsNumberField({ className = '', ...props }: NumberInputProps) {
+  return (
+    <NumberInput {...props}
+      className={`h-10 w-full min-w-0 rounded-[8px] border border-[var(--border)] bg-transparent px-3 text-[14px] text-[var(--text)] outline-none transition placeholder:text-[var(--text-faint)] hover:border-[var(--border-strong)] focus:border-[var(--text-muted)] ${className}`} />
+  );
+}
 
 /** A form that opened under a row. */
 export function SettingsInset({ children }: { children: React.ReactNode }) {

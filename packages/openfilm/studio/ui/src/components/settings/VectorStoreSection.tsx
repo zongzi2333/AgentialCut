@@ -11,7 +11,7 @@ import { useSemanticIndex } from '@/components/media/use-semantic-index';
 import { MenuSelect } from '@/components/MenuSelect';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { FolderBrowserDialog } from '@/components/ProjectSources';
-import type { SemanticLibrary, SemanticModel, SemanticStore } from '@/api';
+import { api, type SemanticLibrary, type SemanticModel, type SemanticStore } from '@/api';
 import { SettingsButton, SettingsGroup, SettingsItem, SettingsPage, settingsError } from './ui';
 
 export function VectorStoreSection({ projectId = null }: { projectId?: string | null }) {
@@ -32,6 +32,17 @@ export function VectorStoreSection({ projectId = null }: { projectId?: string | 
     setBrowser(false);
     setMovingRoot(true);
     try { await semantic.setRoot(path); } catch { /* the error is shown in the service group */ } finally { setMovingRoot(false); }
+  };
+
+  const chooseRoot = async () => {
+    /* The system dialog can reach every drive; Studio's own browser is the fallback where the
+       system has no folder dialog (a browser on a remote page, say). */
+    try {
+      const path = await api.pickFolder(t('settings.vectorStore.location'), root);
+      if (path) await moveRoot(path);
+    } catch {
+      setBrowser(true);
+    }
   };
 
   const restart = async () => {
@@ -88,7 +99,7 @@ export function VectorStoreSection({ projectId = null }: { projectId?: string | 
               <span className="text-[11.5px] text-[var(--text-faint)]">{t('settings.vectorStore.locationHint')}</span>
             </div>
           )}
-          control={<SettingsButton disabled={movingRoot || !root} onClick={() => setBrowser(true)}><HardDrive size={13} />{t('settings.vectorStore.changeLocation')}</SettingsButton>}
+          control={<SettingsButton disabled={movingRoot || !root} onClick={() => void chooseRoot()}><HardDrive size={13} />{t('settings.vectorStore.changeLocation')}</SettingsButton>}
         />
       </SettingsGroup>
 

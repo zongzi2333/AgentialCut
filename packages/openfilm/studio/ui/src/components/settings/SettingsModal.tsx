@@ -19,7 +19,7 @@ import { DiagnosticsGroup } from './DiagnosticsGroup';
 import { ProviderCardsSection } from './ProviderCardsSection';
 import { SettingsSelect } from './SettingsSelect';
 import { ShortcutsSection } from './ShortcutsSection';
-import { SettingsButton, SettingsGroup, SettingsItem, SettingsPage, SettingsSegmented, SettingsSwitch } from './ui';
+import { SettingsButton, SettingsGroup, SettingsItem, SettingsNumberField, SettingsPage, SettingsSegmented, SettingsSwitch } from './ui';
 import { useThemeMode, type ThemeMode } from './theme';
 import { StorageGroup } from './StorageGroup';
 import { VectorStoreSection } from './VectorStoreSection';
@@ -169,7 +169,7 @@ export function SettingsModal({ open, onClose, section: opening, onSection, proj
           <div key={showing ?? 'none'} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-10 pb-12 pt-9">
             {showing ? <h2 id="settings-title" className="mb-7 text-[22px] font-semibold tracking-[-0.015em] text-[var(--text)]">{t(`settings.sections.${showing}`)}</h2> : null}
             {showing === 'general' && <GeneralSection />}
-            {showing === 'agents' && <AgentsSection />}
+            {showing === 'agents' && <AgentsSection projectId={projectId} />}
             {showing === 'providers' && <ProviderCardsSection />}
             {showing === 'vectorStore' && <VectorStoreSection projectId={projectId} />}
             {showing === 'developer' && <DeveloperSection />}
@@ -223,9 +223,32 @@ function GeneralSection() {
           )}
         />
       </SettingsGroup>
+      <StoryboardGroup />
       <StorageGroup />
       {studioHost?.update?.onState ? <AppAboutGroup /> : <AboutGroup />}
     </SettingsPage>
+  );
+}
+
+/** How many candidate materials the rough-cut shelf asks for and shows. */
+function StoryboardGroup() {
+  const [prefs, setPrefs] = React.useState<StudioPrefs | null>(null);
+  React.useEffect(() => { void api.prefs().then(setPrefs).catch(() => {}); }, []);
+  if (!prefs) return null;
+  const count = prefs.storyboard?.candidateCount ?? 16;
+  const change = (next: number) => {
+    const candidateCount = Math.max(3, Math.min(30, Math.round(next) || 16));
+    setPrefs({ ...prefs, storyboard: { candidateCount } });
+    void api.setPrefs({ storyboard: { candidateCount } }).catch(() => {});
+  };
+  return (
+    <SettingsGroup title="分镜">
+      <SettingsItem
+        title="素材候选数量"
+        description="分镜卡片做语义检索时返回并显示的候选素材数量（默认 16）；素材库和素材篮显示全部素材，不受此限制。"
+        control={<SettingsNumberField min={3} max={30} step={1} value={count} onCommit={(value) => change(value ?? 16)} aria-label="素材候选数量" className="w-24 tabular-nums" />}
+      />
+    </SettingsGroup>
   );
 }
 

@@ -1,7 +1,7 @@
 // @ts-check
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyOperations, handoffClips, localProposal, localStoryboard, normalizeStoryboard, scaleDuration } from './storyboard.mjs';
+import { applyOperations, distributeDurations, handoffClips, localProposal, localStoryboard, normalizeStoryboard, scaleDuration } from './storyboard.mjs';
 import { parseJsonReply } from './agent-runtime.mjs';
 
 const project = { name: 'Test film', path: 'C:/tmp/test-film' };
@@ -17,6 +17,25 @@ test('local storyboard: headings become scenes, the brief scales the shots', () 
   assert.ok(doc.shots.every((shot) => shot.targetMs >= 500));
   assert.equal(doc.shots[0].narration, 'Rain on the city.');
   assert.equal(doc.source, 'local');
+});
+
+test('durations follow content, not an equal split', () => {
+  const doc = localStoryboard(project, {
+    text: 'A very short beat.\n\nA much longer line of narration that needs room to breathe and a slow visual move.\n\nEnd.',
+    brief: { durationMs: 30_000 },
+  });
+  distributeDurations(doc, 30_000);
+  assert.equal(doc.shots.reduce((sum, shot) => sum + shot.targetMs, 0), 30_000);
+  assert.ok(new Set(doc.shots.map((shot) => shot.targetMs)).size > 1);
+});
+
+test('storyboard operations accept missing types and direct timing aliases', () => {
+  const doc = localStoryboard(project, { text: 'One.\nTwo.\nThree.', brief: { durationMs: 12_000 } });
+  const [a, b] = doc.shots;
+  const direct = applyOperations(doc, [{ shotId: a.id, durationMs: 6000 }]);
+  assert.equal(direct.shots.find((shot) => shot.id === a.id)?.targetMs, 6000);
+  const locked = applyOperations(doc, [{ type: 'lockShots', shotIds: [b.id] }]);
+  assert.equal(locked.shots.find((shot) => shot.id === b.id)?.locked, true);
 });
 
 test('storyboard operations validate locked shots and reorder every shot once', () => {
@@ -40,13 +59,14 @@ test('duration scaling and handoff keep the adopted clips and list gaps', () => 
     state: 'matched',
     candidates: [{
       id: 'c1', libraryId: 'p', libraryName: 'Project', assetId: 'assets/a.mp4', path: 'assets/a.mp4',
-      name: 'a.mp4', kind: 'video', startMs: 1000, endMs: 3000, score: 1, thumbUrl: '', origin: 'library',
+      name: 'a.mp4', kind: 'video', startMs: 1000, endMs: 30_000, score: 1, thumbUrl: '', origin: 'library',
     }],
     selectedId: 'c1', confidence: 100,
   };
   const { clips, gaps } = handoffClips(doc);
   assert.equal(clips.length, 1);
-  assert.equal(clips[0].durationMs, 2000);
+  assert.equal(clips[0].durationMs, first.targetMs);
+  assert.equal(clips[0].endMs, 1000 + first.targetMs);
   assert.equal(gaps.length, 1);
 });
 
@@ -55,6 +75,11 @@ test('director fallback makes a duration proposal without touching the document'
   const proposal = localProposal(doc, '压到 20 秒');
   assert.deepEqual(proposal.operations, [{ type: 'setTargetDuration', durationMs: 20_000 }]);
   assert.equal(doc.brief.durationMs, 30_000);
+  const decide = localProposal(doc, '你根据内容自行决定各分镜时长');
+  assert.deepEqual(decide.operations, [{ type: 'distributeDurations', durationMs: 30_000 }]);
+  const keep = localProposal(doc, '保持开头三镜');
+  assert.equal(keep.operations[0]?.type, 'lockShots');
+  assert.equal(localProposal(doc, '减少重复镜头').operations.length, 0);
 });
 
 test('model JSON can be fenced, and a broken reply is refused', () => {

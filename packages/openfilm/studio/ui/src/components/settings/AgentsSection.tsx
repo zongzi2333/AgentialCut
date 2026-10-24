@@ -107,7 +107,7 @@ function UsageBar({ window: w }: { window: HostAgentUsage['windows'][number] }) 
   );
 }
 
-export function AgentsSection() {
+export function AgentsSection({ projectId = null }: { projectId?: string | null }) {
   const t = useT();
   const agents = useHostAgents();
   const usage = useAgentUsage(agents);
@@ -118,7 +118,7 @@ export function AgentsSection() {
   const [diagnosis, setDiagnosis] = React.useState<{ id: HostAgentId; report: HostAgentDiagnosis | null; copied?: boolean } | null>(null);
   /* the agent whose installer the person is asked about */
   const [confirming, setConfirming] = React.useState<HostAgentId | null>(null);
-  if (!host) return <AgentCardsSection />;
+  if (!host) return <AgentCardsSection projectId={projectId} />;
 
   const act = (id: HostAgentId, run: () => Promise<{ ok?: boolean; error?: string } | unknown>) => {
     setBusy(id);
@@ -360,7 +360,7 @@ export function AgentsSection() {
   const more = others.filter((a) => !a.shown);
   return (
     <SettingsPage note={t('settings.agents.intro')}>
-      <AgentCardsSection embedded />
+      <AgentCardsSection embedded projectId={projectId} />
       <SettingsGroup title={t('settings.agents.groupYours')} footnote={t('settings.agents.showHint')}>
         {[...always, ...others.filter((a) => a.shown)].map((a) => row(a))}
       </SettingsGroup>

@@ -23,6 +23,8 @@ export interface WorkspaceResource {
   size: number;
   kind: WorkspaceResourceKind;
   mtimeMs: number;
+  /** The material's saved VL description; empty until generated. */
+  desc?: string;
   /** When it came into the project (a link: when it was made); its mtime when the server does not say */
   addedMs?: number;
   /**
@@ -116,9 +118,9 @@ export interface MediaFacts {
 
 /** Studio's `GET files` answer. */
 export interface FilesListing {
-  files: readonly { path: string; kind: string; size: number; mtime: number; added?: number; saved?: SavedBundle & { durationMs?: number; w?: number; h?: number } }[];
+  files: readonly { path: string; kind: string; size: number; mtime: number; added?: number; desc?: string; saved?: SavedBundle & { durationMs?: number; w?: number; h?: number } }[];
   folders: readonly string[];
-  pages: readonly { path: string; size: number; mtime: number }[];
+  pages: readonly { path: string; size: number; mtime: number; desc?: string }[];
   /** Links to media kept elsewhere, by project path (files and folders). */
   links?: Readonly<Record<string, MediaLink>>;
 }
@@ -169,6 +171,7 @@ export function mediaListingOf(
       size: f.size,
       kind: (f.kind === 'page' ? 'mg' : MEDIA_KINDS.includes(f.kind) ? f.kind : 'other') as WorkspaceResourceKind,
       mtimeMs: f.mtime,
+      ...(f.desc ? { desc: f.desc } : {}),
       addedMs: f.added ?? f.mtime,
       /* a bundle of Saved says its own length and size (it is no file to probe) */
       ...(f.saved ? {
@@ -197,6 +200,7 @@ export function mediaListingOf(
       size: p.size,
       kind: 'mg' as const,
       mtimeMs: p.mtime,
+      ...(p.desc ? { desc: p.desc } : {}),
       addedMs: p.mtime,
       ...facts?.(p.path),
     })),

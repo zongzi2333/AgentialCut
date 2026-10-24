@@ -22,7 +22,7 @@ export interface StoryboardState {
   undo: () => void;
   canUndo: boolean;
   generate: (body: { text?: string; prompt?: string; brief?: Partial<StoryboardDocument['brief']> }) => Promise<'success' | 'failed'>;
-  match: (shotIds?: string[]) => Promise<'success' | 'failed'>;
+  match: (shotIds?: string[], topK?: number) => Promise<'success' | 'failed'>;
   fill: (shotId: string, prompt: string, duration?: number) => Promise<'success' | 'failed'>;
   chat: (text: string, selectedIds: string[]) => Promise<StoryboardChatResponse | null>;
   apply: (proposal: Pick<StoryboardProposal, 'baseRevision'>, operations: Array<Record<string, unknown>>) => Promise<boolean>;
@@ -40,6 +40,10 @@ export function useStoryboard(projectId: string): StoryboardState {
   const live = React.useRef(true);
   const current = React.useRef<StoryboardDocument | null>(null);
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** There are inline edits not yet written to the server. `flush` must not save an unchanged
+      document: saving bumps the revision, and an AI edit based on the old revision would then be
+      rejected as a conflict. */
+  const dirty = React.useRef(false);
   const past = React.useRef<StoryboardDocument[]>([]);
   const [canUndo, setCanUndo] = React.useState(false);
 
@@ -49,6 +53,7 @@ export function useStoryboard(projectId: string): StoryboardState {
 
   const commit = React.useCallback((next: StoryboardDocument) => {
     current.current = next;
+    dirty.current = false;
     if (!live.current) return;
     setDoc(next);
     setCanUndo(past.current.length > 0);
@@ -104,6 +109,7 @@ export function useStoryboard(projectId: string): StoryboardState {
   }, [projectId, commit, say, load]);
 
   const schedule = React.useCallback((next: StoryboardDocument) => {
+    dirty.current = true;
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => { void saveNow(next); }, 650);
   }, [saveNow]);
@@ -146,10 +152,10 @@ export function useStoryboard(projectId: string): StoryboardState {
     }
   }, [projectId, commit, say]);
 
-  const match = React.useCallback(async (shotIds?: string[]) => {
+  const match = React.useCallback(async (shotIds?: string[], topK?: number) => {
     setBusy('match');
     try {
-      const next = await api.matchStoryboard(projectId, shotIds?.length ? { shotIds } : {});
+      const next = await api.matchStoryboard(projectId, { ...(shotIds?.length ? { shotIds } : {}), ...(topK ? { topK } : {}) });
       past.current = [...past.current.slice(-24), clone(current.current as StoryboardDocument)].filter(Boolean);
       commit(next);
       setError('');
@@ -224,6 +230,7 @@ export function useStoryboard(projectId: string): StoryboardState {
   }, [projectId, commit, say]);
 
   const flush = React.useCallback(async () => {
+    if (!dirty.current) return;
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     if (current.current) await saveNow(current.current);

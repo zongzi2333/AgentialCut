@@ -26,10 +26,10 @@ export type Track = { clips: Clip[]; locked?: boolean; hidden?: boolean; muted?:
 export type Film = { stage?: { w: number; h: number }; tracks: Track[] };
 /** `value`: film.html as read, every clip named (a clip with no id takes its file's name, as the server and preview do). */
 export type ProjectFilm = { project: Project; folder: string; text: string; rev: string; value: Film | null; doc: Film | null; problems: string[] };
-export type MediaFile = { path: string; kind: 'video' | 'image' | 'audio' | 'page' | 'other'; size: number; mtime: number; added?: number };
+export type MediaFile = { path: string; kind: 'video' | 'image' | 'audio' | 'page' | 'other'; size: number; mtime: number; added?: number; desc?: string };
 /** A project's editor settings (studio/server/project-settings.mjs). */
 export type ProjectSettings = { fps?: number; trackNames?: { name: string; index: number; clips: string[] }[]; trackHeights?: { height: number; index: number; clips: string[] }[] };
-export type Listing = { files: MediaFile[]; folders: string[]; pages: { path: string; size: number; mtime: number }[] };
+export type Listing = { files: MediaFile[]; folders: string[]; pages: { path: string; size: number; mtime: number; desc?: string }[] };
 export type Op =
   | { op: 'set'; clip: string; field: string; value?: unknown }
   | { op: 'move'; clip: string; at: number; track?: number; newTrack?: number }
@@ -85,6 +85,8 @@ export interface StudioPrefs {
   projectsFolder: string | null;
   /** the keyboard shortcuts: the scheme in use and the custom ones (lib/keymap `KeyPrefs`, checked there) */
   keys?: unknown;
+  /** the rough cut's search: how many candidate materials its shelf asks for and shows */
+  storyboard?: { candidateCount: number };
 }
 /** Where the projects library is (src/locations.mjs): the folder, its default, whether the person chose it, the free space on its disk, how many projects are in it. */
 export interface StudioLocation { path: string; default: string; chosen: boolean; free: number | null; count: number }
@@ -246,6 +248,21 @@ export interface StoryboardChatResponse {
   proposal: StoryboardProposal;
   intent?: string;
 }
+export interface ModelLogEntry {
+  id: number;
+  at: number;
+  role: string;
+  agent: string;
+  provider: string;
+  model: string;
+  protocol: string;
+  status: 'running' | 'ok' | 'error';
+  ms: number;
+  request: { system: string; messages: { role: string; content: string }[] };
+  reply: string;
+  usage: { input?: number; output?: number; total?: number } | null;
+  error: string;
+}
 export interface PipelineStep {
   id: string; label: string; state: 'idle' | 'running' | 'done' | 'skipped' | 'error'; detail?: string; startedAt?: number; finishedAt?: number;
 }
@@ -328,7 +345,7 @@ export const api = {
   revealProject: (id: string) => call<object>(`projects/${encodeURIComponent(id)}/reveal`, { method: 'POST', json: {} }),
   /** one of them in the system's file manager */
   openLocation: (which: keyof StudioLocations) => call<{ ok: true }>(`locations/${which}`, { method: 'POST', json: {} }),
-  setPrefs: (patch: { proxies?: Partial<StudioPrefs['proxies']>; seenVersion?: string; projectsFolder?: string | null; keys?: unknown }) => call<StudioPrefs>('prefs', { method: 'PATCH', json: patch }).then((prefs) => {
+  setPrefs: (patch: { proxies?: Partial<StudioPrefs['proxies']>; seenVersion?: string; projectsFolder?: string | null; keys?: unknown; storyboard?: Partial<NonNullable<StudioPrefs['storyboard']>> }) => call<StudioPrefs>('prefs', { method: 'PATCH', json: patch }).then((prefs) => {
     window.dispatchEvent(new Event(PREFS_EVENT));
     return prefs;
   }),
@@ -348,6 +365,10 @@ export const api = {
   opened: (id: string) => call<{ project: Project }>(`${p(id)}/opened`, { method: 'POST' }),
   edit: (id: string, base: string | null, ops: Op[]) => call<{ text: string; rev: string; value: Film; doc: Film; rebased: boolean }>(`${p(id)}/edit`, { method: 'POST', json: { base, ops } }),
   files: (id: string) => call<Listing>(`${p(id)}/files`),
+  /** the editing stage's assistant conversation (advice only; edits stay in Studio's undoable tools) */
+  editChat: (id: string, text: string) => call<{ reply: string }>(`${p(id)}/edit/chat`, { method: 'POST', json: { text } }).then((r) => r.reply),
+  assetDescriptions: (id: string) => call<{ descriptions: Record<string, string> }>(`${p(id)}/asset-descriptions`).then((r) => r.descriptions),
+  describeAsset: (id: string, path: string, regenerate = false) => call<{ desc: string }>(`${p(id)}/asset-descriptions`, { method: 'POST', json: { path, regenerate } }).then((r) => r.desc),
   /** the editor's settings of the project (`.film/settings.json`): its frame rate, its tracks' names */
   settings: (id: string) => call<{ settings: ProjectSettings }>(`${p(id)}/settings`).then((r) => r.settings),
   /** change some of them (null takes one away); answers them all as kept */
@@ -416,6 +437,9 @@ export const api = {
   chatStoryboard: (id: string, body: { text: string; selectedIds?: string[] }) => call<StoryboardChatResponse>(`${p(id)}/storyboard/chat`, { method: 'POST', json: body }),
   applyStoryboard: (id: string, body: { baseRevision: number; operations: Array<Record<string, unknown>> }) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard/apply`, { method: 'POST', json: body }).then((r) => r.storyboard),
   handoffStoryboard: (id: string) => call<{ storyboard: StoryboardDocument; clips: HandoffClip[]; gaps: string[] }>(`${p(id)}/storyboard/handoff`, { method: 'POST', json: {} }),
+  /** the developer's floating model-call log */
+  modelLogs: (limit = 200) => call<{ entries: ModelLogEntry[] }>(`model-logs?limit=${limit}`).then((r) => r.entries),
+  clearModelLogs: () => call<object>('model-logs', { method: 'DELETE' }),
   storyboardRun: (id: string) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run`).then((r) => r.run),
   startStoryboardRun: (id: string, body: { text?: string; prompt?: string; brief?: Partial<StoryboardBrief> }) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run`, { method: 'POST', json: body }).then((r) => r.run),
   cancelStoryboardRun: (id: string) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run/cancel`, { method: 'POST', json: {} }).then((r) => r.run),

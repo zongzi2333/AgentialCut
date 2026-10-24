@@ -183,7 +183,7 @@ export function FolderBrowserDialog({
           {listing?.places.map((p) => (
             <button key={p.path} type="button" onClick={() => void go(p.path)} className={side(listing.path === p.path)} title={p.path}>
               <Folder size={14} className="shrink-0" />
-              <span className="truncate">{place(p.id)}</span>
+              <span className="truncate">{p.label ?? place(p.id)}</span>
             </button>
           ))}
           {listing?.recent.length ? (

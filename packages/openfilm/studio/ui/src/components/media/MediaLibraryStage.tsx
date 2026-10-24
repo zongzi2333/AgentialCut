@@ -31,6 +31,7 @@ import { SemanticIndexPanel } from './SemanticIndexPanel';
 import { loadBasket, saveBasket, sameBasketItem, type BasketItem } from './basket';
 import { useSemanticIndex } from './use-semantic-index';
 import type { SemanticHit } from '@/api';
+import { api } from '@/api';
 
 type KindFilter = 'all' | 'video' | 'image' | 'audio' | 'mg';
 type Sort = 'recent' | 'name' | 'duration' | 'kind';
@@ -74,6 +75,8 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImp
   const [view, setView] = React.useState<'grid' | 'list'>('grid');
   const [selected, setSelected] = React.useState<string[]>([]);
   const [primary, setPrimary] = React.useState<string | null>(null);
+  const [descriptions, setDescriptions] = React.useState<Record<string, string>>({});
+  const [describing, setDescribing] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [uploads, setUploads] = React.useState<UploadRow[]>([]);
   const [menu, setMenu] = React.useState<{ x: number; y: number; file: WorkspaceResource } | null>(null);
@@ -95,6 +98,11 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImp
   const { width: basketHeight, commit: commitBasketHeight } = usePaneSize('openfilm.mediaStage.basketH', 88, 88);
 
   React.useEffect(() => { saveBasket(projectId, basket); }, [basket, projectId]);
+  React.useEffect(() => {
+    let live = true;
+    void api.assetDescriptions(projectId).then((next) => { if (live) setDescriptions(next); }, () => {});
+    return () => { live = false; };
+  }, [projectId, primary]);
   /* files changed on disk (the watcher reloads the listing): the index's picture of them has changed too */
   React.useEffect(() => { void semantic.refresh(); }, [listing, semantic.refresh]);
   React.useEffect(() => {
@@ -472,6 +480,19 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImp
     void semantic.start({ assetIds: [file.path] });
   }
 
+  async function describeMaterial(file: WorkspaceResource, regenerate: boolean) {
+    setDescribing(file.path);
+    try {
+      const desc = await api.describeAsset(projectId, file.path, regenerate);
+      setDescriptions((current) => ({ ...current, [file.path]: desc }));
+      notify(regenerate ? '素材描述已重新生成' : '素材描述已生成');
+    } catch (e) {
+      error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDescribing(null);
+    }
+  }
+
   function runImageSearch(file: File) {
     const reader = new FileReader();
     reader.onload = () => {
@@ -743,6 +764,9 @@ export function MediaLibraryStage({ projectId, listing, sources, usedSrcs, onImp
           onSetCover={(file) => onSetCover(file.path)}
           onRemove={(files) => setDeleting([...files])}
           onIndex={(file) => indexFile(file)}
+          description={primaryFile ? descriptions[primaryFile.path] ?? primaryFile.desc ?? '' : ''}
+          describing={Boolean(primaryFile && describing === primaryFile.path)}
+          onDescribe={(file, regenerate) => void describeMaterial(file, regenerate)}
         />
       </div>
 
