@@ -80,8 +80,10 @@ export function MediaPreviewDialog({ target, onClose }: { target: PreviewTarget 
         setMarkOut(at > markIn ? at : null);
       }
     };
-    document.addEventListener('keydown', onKey, true);
-    return () => document.removeEventListener('keydown', onKey, true);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+    };
   }, [target, markIn, finish]);
 
   const bounds = React.useRef({ startMs: 0, endMs: 0 });
@@ -116,7 +118,7 @@ export function MediaPreviewDialog({ target, onClose }: { target: PreviewTarget 
   if (!target) return null;
   const endMs = markOut ?? durationMs;
   return (
-    <div className="fixed inset-0 z-[10200] flex items-center justify-center bg-black/70 p-5 backdrop-blur-[3px]"
+    <div data-media-preview="" role="dialog" aria-modal="true" className="fixed inset-0 z-[10200] flex items-center justify-center bg-black/70 p-5 backdrop-blur-[3px]"
       onClick={finish} onContextMenu={(event) => { event.preventDefault(); finish(); }}>
       <div className="relative flex max-h-[92vh] w-full max-w-[min(1100px,92vw)] flex-col overflow-hidden rounded-[10px] border border-white/15 bg-black shadow-[0_24px_80px_rgba(0,0,0,.5)]"
         onClick={(event) => event.stopPropagation()}>

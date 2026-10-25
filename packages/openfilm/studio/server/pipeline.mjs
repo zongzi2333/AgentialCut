@@ -10,10 +10,10 @@ import { writeAtomic } from './atomic.mjs';
 
 export const PIPELINE_STEPS = [
   { id: 'generate', label: '生成/转换分镜' },
-  { id: 'query', label: '检索规划' },
+  { id: 'query', label: '素材检索' },
   { id: 'match', label: '匹配素材' },
-  { id: 'verify', label: '画面审核' },
-  { id: 'continuity', label: '连续性检查' },
+  { id: 'verify', label: '自动质检' },
+  { id: 'continuity', label: '剪辑连续性' },
 ];
 
 const FILE_NAME = 'roughcut-run.json';
@@ -46,7 +46,7 @@ export function runFile(/** @type {{ path: string }} */ project) {
   return join(project.path, '.film', FILE_NAME);
 }
 
-/** The storyboard just before the continuity agent's safe edits, for its one-click undo. */
+/** The storyboard just before the edit agent's safe edits, for its one-click undo. */
 export function undoFile(/** @type {{ path: string }} */ project) {
   return join(project.path, '.film', 'roughcut-undo.json');
 }

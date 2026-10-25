@@ -11,7 +11,7 @@
  */
 import { BaseWindow, Menu, WebContentsView, app, clipboard, dialog, ipcMain, nativeTheme, safeStorage, screen, shell } from 'electron';
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FLAVOR, IDENTITY, PRODUCT_NAME } from './flavor.mjs';
 import { folderDialogOptions, programDialogOptions } from './folder-dialog.mjs';
@@ -599,6 +599,25 @@ async function start() {
       ...(env.OPENFILM_SHARED_HOME ? { OPENFILM_SHARED_HOME: env.OPENFILM_SHARED_HOME } : {}),
     },
     harness: async (id) => roster?.harness(id) ?? null,
+    /* The OpenFilm MCP server for the project the agent works in: one controlled surface for
+       reading and editing; no render/export, TTS or music tools. */
+    mcp: async (cwd) => {
+      if (!studio) return [];
+      const listed = await studioApi('/api/projects').catch(() => ({ projects: [] }));
+      const key = (value) => {
+        const path = resolve(value);
+        return process.platform === 'win32' ? path.toLowerCase() : path;
+      };
+      const wanted = key(cwd);
+      const project = (listed.projects ?? []).find((item) => !item.missing && key(item.path) === wanted);
+      if (!project) return [];
+      return [{
+        type: 'http',
+        name: 'openfilm',
+        url: `${studio.origin}/api/projects/${encodeURIComponent(project.id)}/mcp`,
+        headers: [{ name: 'Authorization', value: `Bearer ${studio.mcpKey}` }],
+      }];
+    },
     /* Developer mode: an agent whose own record lacks what its model got logs it here (agent-logs.mjs) */
     logDir: () => (readPreferences(DATA).developer ? join(DATA, 'agent-logs') : null),
     /* each session's skills: its maker's, OpenFilm's, and of the person's own those let in (agent-skills.mjs) */

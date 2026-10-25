@@ -33,6 +33,7 @@ import { DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, c
 import { Agent, install, setGlobalDispatcher } from 'undici';
 import { agentSessionsDir, openLog } from './chat-store.mjs';
 import { IMAGE_BUDGET, THINKING, TOO_LARGE, WAIT_MINUTES, contextUsed, effortOption, fitImages, modelOption, modelsJson, providerOf, retryNotice, stopReason, toolCall, toolContent } from './pi-config.mjs';
+import { mcpTools } from './mcp-tools.mjs';
 
 /* stdout is the protocol's: anything else Pi or a library prints goes to stderr */
 console.log = console.info = console.warn = console.debug = (...args) => process.stderr.write(`${args.map(String).join(' ')}\n`);
@@ -114,11 +115,13 @@ function modelLog(cwd, turnId) {
   };
 }
 
-async function open(client, cwd, resumeId) {
+async function open(client, cwd, resumeId, mcpServers = []) {
   const sessionDir = agentSessionsDir(cwd);
   const file = resumeId ? SessionManager.findById(cwd, resumeId, sessionDir) : null;
   if (resumeId && !file) throw new Error('That conversation is not here any more.');
   const sessionManager = file ? SessionManager.open(file, sessionDir) : SessionManager.create(cwd, sessionDir);
+  /* the same project-scoped OpenFilm MCP tools the external ACP agents get */
+  const mcp = await mcpTools(Array.isArray(mcpServers) ? mcpServers : []);
   /* the model clients' own timeout too (WAIT_MS above), then one more try */
   const settingsManager = SettingsManager.inMemory({ httpIdleTimeoutMs: WAIT_MS, retry: { enabled: true, maxRetries: 1 } });
   /* the request about to go: its whole context, for the turn's log */
@@ -137,6 +140,14 @@ async function open(client, cwd, resumeId) {
     appendSystemPromptOverride: () => [],
     agentsFilesOverride: ({ agentsFiles }) => ({ agentsFiles: agentsFiles.filter((f) => dirname(resolve(f.path)) === resolve(cwd)) }),
     extensionFactories: [
+      /* OpenFilm's MCP tools: storyboard/timeline/QC, the same server external ACP agents use */
+      ...(mcp.tools.length ? [{
+        name: 'openfilm-mcp',
+        hidden: true,
+        factory: (/** @type {any} */ pi) => {
+          for (const tool of mcp.tools) pi.registerTool(tool);
+        },
+      }] : []),
       /* each request's pictures within the budget, the oldest left out first: the request only, never the session */
       { name: 'openfilm-images', hidden: true, factory: (pi) => {
         pi.on('context', (event) => {
@@ -156,7 +167,7 @@ async function open(client, cwd, resumeId) {
   const { session } = await createAgentSession({
     cwd, agentDir: config.agentDir, modelRuntime, model: piModel(startModel, startEffort),
     ...(startEffort !== 'auto' ? { thinkingLevel: startEffort } : {}),
-    resourceLoader, sessionManager, settingsManager, tools: ['read', 'bash', 'edit', 'write', 'ask'],
+    resourceLoader, sessionManager, settingsManager, tools: ['read', 'bash', 'edit', 'write', 'ask', ...mcp.names],
   });
   /* a request refused as too large is one Pi tries again (its retry: once, the failed attempt left out of what is sent)
      when it held pictures to leave out; Pi neither retries a 413 nor, but for Anthropic's own words, compacts for it */
@@ -320,8 +331,8 @@ const connection = new acp.AgentSideConnection((client) => ({
     };
   },
   async authenticate() { return {}; },
-  newSession: said((params) => open(client, params.cwd, null)),
-  resumeSession: said((params) => open(client, params.cwd, params.sessionId)),
+  newSession: said((params) => open(client, params.cwd, null, params.mcpServers)),
+  resumeSession: said((params) => open(client, params.cwd, params.sessionId, params.mcpServers)),
   prompt: said(async (params) => {
     const entry = sessions.get(params.sessionId);
     if (!entry) throw new Error('This conversation has ended.');

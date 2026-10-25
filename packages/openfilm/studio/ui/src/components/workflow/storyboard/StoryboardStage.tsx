@@ -1,6 +1,6 @@
 /**
  * The storyboard and rough-cut surface: cards grouped by scene, a rhythm strip, the contextual shelf,
- * and the director. It is the only owner of the storyboard document on this page; child components
+ * and the conversation pane. It is the only owner of the storyboard document on this page; child components
  * receive shots and emit edits, so saving and revision conflicts stay in one place.
  */
 import * as React from 'react';
@@ -62,9 +62,7 @@ export function StoryboardStage({
   const [generateDuration, setGenerateDuration] = React.useState(30);
   const [importing, setImporting] = React.useState(false);
   const [configured, setConfigured] = React.useState<boolean | null>(null);
-  const [handoffOpen, setHandoffOpen] = React.useState(false);
   const [handoffSubtitles, setHandoffSubtitles] = React.useState(true);
-  const [handoffBusy, setHandoffBusy] = React.useState(false);
   const [fillShot, setFillShot] = React.useState<StoryboardShot | null>(null);
   const [replaceOpen, setReplaceOpen] = React.useState(false);
   const [preview, setPreview] = React.useState<PreviewTarget | null>(null);
@@ -82,7 +80,7 @@ export function StoryboardStage({
   const inputRef = React.useRef<HTMLInputElement>(null);
   const doc = story.doc;
 
-  useDismissOutside(selected.length > 0, () => setSelected([]), '[data-shot-id], [data-storyboard-agent], [data-storyboard-shelf]');
+  useDismissOutside(selected.length > 0 && !preview, () => setSelected([]), '[data-shot-id], [data-storyboard-agent], [data-storyboard-shelf], [data-media-preview]');
   /* An expanded card collapses on any press outside it, including a dialog or toolbar control:
      once it is twice the card's size it covers enough of the board that its edges must be easy to
      dismiss. Its form is committed by the card when `expanded` turns false. */
@@ -420,21 +418,15 @@ export function StoryboardStage({
   };
 
   const handoff = async () => {
-    setHandoffBusy(true);
-    try {
-      await story.flush();
-      const result = await story.handoff();
-      if (!result) return;
-      const added = result.clips.length ? await onAddToTimeline(result.clips.map((clip) => ({ path: clip.path, startMs: clip.startMs, endMs: clip.endMs })), { replace: true }) : 0;
-      if (result.clips.length && !added) { error(t('storyboard.handoffGaps').replace('{n}', String(result.clips.length))); return; }
-      if (added < result.clips.length) error(`只导入了 ${added}/${result.clips.length} 个镜头；其余素材不在项目文件夹中。`);
-      setHandoffOpen(false);
-      notify(t('storyboard.handoffDone'));
-      await onHandoffComplete?.(handoffSubtitles);
-      onEnterEdit();
-    } finally {
-      setHandoffBusy(false);
-    }
+    await story.flush();
+    const result = await story.handoff();
+    if (!result) return;
+    const added = result.clips.length ? await onAddToTimeline(result.clips.map((clip) => ({ path: clip.path, startMs: clip.startMs, endMs: clip.endMs })), { replace: true }) : 0;
+    if (result.clips.length && !added) { error(t('storyboard.handoffGaps').replace('{n}', String(result.clips.length))); return; }
+    if (added < result.clips.length) error(`只导入了 ${added}/${result.clips.length} 个镜头；其余素材不在项目文件夹中。`);
+    notify(t('storyboard.handoffDone'));
+    await onHandoffComplete?.(handoffSubtitles);
+    onEnterEdit();
   };
 
   const filteredScene = (sceneId: string) => (doc?.shots ?? []).filter((shot) => shot.sceneId === sceneId && visibleShots.includes(shot));
@@ -489,7 +481,7 @@ export function StoryboardStage({
             <label className="flex h-[26px] items-center gap-1.5 rounded-md px-1.5 text-[10px] text-[var(--text-muted)]" title="导入粗剪后自动识别对白并生成字幕">
               <input type="checkbox" checked={handoffSubtitles} onChange={(event) => setHandoffSubtitles(event.target.checked)} />生成字幕
             </label>
-            <button type="button" disabled={!doc?.shots.length || Boolean(story.busy)} onClick={() => setHandoffOpen(true)}
+            <button type="button" disabled={!doc?.shots.length || Boolean(story.busy)} onClick={() => void handoff()}
               className="flex h-[26px] items-center gap-1 rounded-md bg-[var(--text)] px-2.5 text-[10.5px] font-medium text-[var(--panel)] transition hover:opacity-90 disabled:opacity-40">{t('storyboard.enterEdit')}</button>
           </div>
 
@@ -533,7 +525,7 @@ export function StoryboardStage({
 
         <PaneDivider width={directorW} onResize={commitDirectorWidth} containerRef={rowRef} label="调整分镜板与 AI 导演的宽度" min={300} minRest={420} side="end" />
         <div className="flex min-h-0 shrink-0" style={{ width: directorW }}>
-          <DirectorPanel doc={doc} selectedIds={selected} busy={story.busy} error={story.error || ''} configured={configured}
+          <DirectorPanel projectId={projectId} doc={doc} selectedIds={selected} busy={story.busy} error={story.error || ''} configured={configured}
             chat={async (text, ids) => { await story.flush(); return story.chat(text, ids); }} apply={async (proposal, operations) => { await story.flush(); return story.apply(proposal, operations); }} onMatch={runMatch} onGenerateFromPrompt={generateFromPrompt} onOpenSettings={onSettings} onUndo={story.undo} pipeline={pipeline} />
         </div>
       </div>
@@ -564,10 +556,6 @@ export function StoryboardStage({
         }} />
       <ConfirmDialog open={replaceOpen} title={t('storyboard.replaceTitle')} description={t('storyboard.replaceHint').replace('{n}', String(doc?.shots.length ?? 0))}
         confirmLabel={t('storyboard.replaceConfirm')} cancelLabel={t('storyboard.handoffCancel')} onConfirm={() => void generateNow()} onCancel={() => setReplaceOpen(false)} />
-      <ConfirmDialog open={handoffOpen} title={t('storyboard.handoffTitle')}
-        description={`${t('storyboard.handoffHint')} ${gaps ? t('storyboard.handoffGaps').replace('{n}', String(gaps)) : ''} 会将当前剪辑时间线替换为这份粗剪${handoffSubtitles ? '，并自动生成字幕' : ''}。`}
-        confirmLabel={handoffBusy ? t('storyboard.running') : t('storyboard.handoffConfirm')} cancelLabel={t('storyboard.handoffCancel')}
-        onConfirm={() => void handoff()} onCancel={() => setHandoffOpen(false)} />
       {story.error ? <p className="sr-only" role="alert">{story.error}</p> : null}
     </div>
   );

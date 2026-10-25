@@ -187,9 +187,15 @@ export function useStoryboard(projectId: string): StoryboardState {
   const chat = React.useCallback(async (text: string, selectedIds: string[]) => {
     setBusy('chat');
     try {
-      const result = await api.chatStoryboard(projectId, { text, selectedIds });
+      const result = await api.agentChat(projectId, { text, selectedIds, scope: 'storyboard' });
+      if (!result.proposal) throw new Error('对话返回缺少分镜提案');
       setError('');
-      return result;
+      return {
+        reply: result.reply,
+        operations: result.operations ?? [],
+        proposal: result.proposal,
+        ...(result.intent ? { intent: result.intent } : {}),
+      };
     } catch (e) {
       say(e);
       return null;

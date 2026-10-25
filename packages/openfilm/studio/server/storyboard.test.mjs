@@ -1,7 +1,7 @@
 // @ts-check
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyOperations, distributeDurations, handoffClips, localProposal, localStoryboard, normalizeStoryboard, scaleDuration } from './storyboard.mjs';
+import { applyOperations, distributeDurations, handoffClips, localProposal, localStoryboard, matchStoryboard, normalizeStoryboard, scaleDuration } from './storyboard.mjs';
 import { parseJsonReply } from './agent-runtime.mjs';
 
 const project = { name: 'Test film', path: 'C:/tmp/test-film' };
@@ -48,6 +48,43 @@ test('storyboard operations validate locked shots and reorder every shot once', 
   assert.throws(() => applyOperations(next, [{ type: 'reorderShots', shotIds: [a.id] }]), /every shot/);
   const reordered = applyOperations(next, [{ type: 'reorderShots', shotIds: [b.id, a.id] }]);
   assert.deepEqual(reordered.shots.map((shot) => shot.id), [b.id, a.id]);
+});
+
+test('the displayed match confidence is the semantic score, even when a visual review exists', () => {
+  const doc = normalizeStoryboard({
+    title: 'Test',
+    brief: { durationMs: 10_000, aspect: '16:9', tone: '', notes: '' },
+    scenes: [{ id: 'sc1', title: 'Scene', order: 0 }],
+    shots: [{
+      id: 'sh1', sceneId: 'sc1', order: 0, title: 'Shot', narration: '', visualIntent: '',
+      must: [], avoid: [], targetMs: 4000, locked: false, generated: false,
+      match: {
+        state: 'matched', selectedId: 'c1', confidence: 20, query: '',
+        candidates: [{
+          id: 'c1', libraryId: 'l', libraryName: 'L', assetId: 'a', path: 'a.mp4', name: 'a.mp4',
+          kind: 'video', startMs: 0, endMs: 1000, score: 0.82, thumbUrl: '', origin: 'library',
+          review: { verdict: 'uncertain', confidence: 0.2, reason: '' },
+        }],
+      },
+    }],
+  }, { name: 'Test', path: 'C:/tmp/test-film' });
+  assert.equal(doc.shots[0].match.confidence, 82);
+});
+
+test('matching does not reuse a source already adopted by another shot when another candidate exists', async () => {
+  const doc = localStoryboard(project, { text: 'First.\nSecond.', brief: { durationMs: 8000 } });
+  const index = {
+    search: async () => ({
+      hits: [
+        { libraryId: 'l', libraryName: 'L', assetId: 'a', path: 'a.mp4', name: 'a.mp4', kind: 'video', startMs: 0, endMs: 1000, score: 0.9, thumbUrl: '' },
+        { libraryId: 'l', libraryName: 'L', assetId: 'b', path: 'b.mp4', name: 'b.mp4', kind: 'video', startMs: 0, endMs: 1000, score: 0.8, thumbUrl: '' },
+      ],
+    }),
+  };
+  const matched = await matchStoryboard(doc, { id: 'p', name: 'P', path: 'C:/tmp/p' }, index, { topK: 2 });
+  const paths = matched.shots.map((shot) => shot.match.candidates.find((candidate) => candidate.id === shot.match.selectedId)?.path);
+  assert.deepEqual(paths, ['a.mp4', 'b.mp4']);
+  assert.equal(matched.shots[0].match.confidence, 90, 'confidence stays the semantic score');
 });
 
 test('duration scaling and handoff keep the adopted clips and list gaps', () => {

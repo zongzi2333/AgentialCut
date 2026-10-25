@@ -1,5 +1,5 @@
 /**
- * The storyboard's director pane.
+ * The storyboard's conversation pane.
  *
  * It is a conversation about a draft, not a second editor. A structural request is applied directly
  * (the storyboard's undo is the safety net); the run and history tabs make the agents' work and the
@@ -8,7 +8,7 @@
 import * as React from 'react';
 import { ArrowUp, Loader2, RotateCcw, Settings2, Sparkles } from 'lucide-react';
 import { useT } from '@/i18n';
-import type { PipelineRun, StoryboardChatResponse, StoryboardDocument, StoryboardProposal } from '@/api';
+import { api, type PipelineRun, type StoryboardChatResponse, type StoryboardDocument, type StoryboardProposal } from '@/api';
 import { PANE_BAR, PANE_BTN, PANE_TITLE } from '../../dock-pane-bar';
 
 type Tab = 'chat' | 'run' | 'history';
@@ -16,6 +16,7 @@ type Message = { id: string; role: 'user' | 'agent'; text: string };
 type Applied = { id: string; text: string; at: number };
 
 export function DirectorPanel({
+  projectId,
   doc,
   selectedIds,
   busy,
@@ -29,6 +30,7 @@ export function DirectorPanel({
   onUndo,
   pipeline,
 }: {
+  projectId: string;
   doc: StoryboardDocument | null;
   pipeline?: PipelineRun | null;
   selectedIds: readonly string[];
@@ -51,6 +53,15 @@ export function DirectorPanel({
   const composer = React.useRef<HTMLTextAreaElement>(null);
   const selected = doc?.shots.filter((shot) => selectedIds.includes(shot.id)) ?? [];
   const working = busy === 'chat' || busy === 'apply' || busy === 'generate';
+
+  React.useEffect(() => {
+    let live = true;
+    void api.agentChatHistory(projectId, 'storyboard').then((stored) => {
+      if (!live) return;
+      setMessages(stored);
+    }).catch(() => { /* the hint remains when history cannot be read */ });
+    return () => { live = false; };
+  }, [projectId]);
 
   const send = React.useCallback(async () => {
     const text = ask.trim();

@@ -99,23 +99,38 @@ export const HARNESS_AGENTS = Object.freeze(['byok']);
 export const isChatAgent = (id) => isAgentId(id) || HARNESS_AGENTS.includes(id);
 
 /** How the person points at things in Studio, and how the agent points back: told to every agent, the app's own too. */
-export const STUDIO_REFERENCES = `When the person mentions something in Studio, they may name a clip, a page or a moment (as seconds); find it in
-film.html and the project's files.
+export const STUDIO_REFERENCES = `When the person mentions something in Studio, they may name a clip, a page or a moment (as seconds); read it with the OpenFilm tools (read_timeline, read_storyboard, read_project) instead of opening film.html yourself.
 
 In your replies you can point at things in Studio for the person: [[clip:ID]] (a clip, by its id in film.html),
 [[t:SECONDS]] (a moment), [[range:START-END]] (a stretch, in seconds), [[track:N]] (a track, 0 is the first) and
 [[file:PATH]] (a file of the project). They show as links that open it in Studio.`;
 
 /** What the agent is told about where it is, on top of its own instructions. */
-export const INSTRUCTIONS = `You are working inside OpenFilm, a desktop app for making videos. Beside this chat the person sees OpenFilm Studio,
-the video editor, showing the project in your working directory; it updates live as you save files.
+export const INSTRUCTIONS = `## 任务
+You are working inside OpenFilm, a desktop app for making videos. Beside this chat the person sees OpenFilm Studio,
+the video editor, showing the project in your working directory; it updates live as the documents change.
 
-The project is an OpenFilm film: pages with window.film, cut together by film.html. Before you change anything, run
-\`openfilm\` with no arguments and read the manual it prints; follow it. Use the \`openfilm\` command on your PATH (this
-app's own, on the Studio beside you), not \`npx openfilm\`, whatever a skill says. Studio is already open on this
-project: you never need \`openfilm open\` and never open Studio in a browser. Run \`openfilm look\` after each change
-to see what you made. Render the MP4 only when the person asks for it; they can also export from Studio. Reply in the
-language the person writes in.
+The project is an OpenFilm film. Your job is to understand the person's intent and change the film through OpenFilm's
+controlled tools, not through direct edits of the film documents.
+
+## 要求
+1. The OpenFilm MCP server named \`openfilm\` is connected to this session. Use \`read_project\`, \`read_storyboard\`,
+   \`read_timeline\` and \`search_materials\` to inspect; \`edit_storyboard\` and \`edit_timeline\` to make validated
+   changes; \`qc\` for automatic checks; \`undo_timeline\` for the last tool edit.
+2. Read the latest timeline before every edit. Never touch a locked shot, locked track or a user's overrides.
+3. OpenFilm tools are phase-scoped: before storyboard handoff, storyboard tools are available; after handoff they are hidden and only timeline/edit tools remain. Use \`tools/list\` when unsure.
+4. You may create and edit pages, media and other project assets with your own file tools, but never edit
+   \`film.html\` or \`.film/storyboard.json\` directly: use \`edit_timeline\` and \`edit_storyboard\`.
+5. Make structural and timeline changes directly with the editing tools. If the tools cannot express the request, explain the limitation.
+6. Never render, export, generate TTS or generate music. Those are the person's actions; audio generation is not
+   implemented yet.
+7. If a tool rejects an operation, read the current document again and correct it. Do not write the file yourself
+   and do not silently overwrite another person's or agent's change.
+
+## 交付
+Every turn delivers a reply in the person's language, the tool calls (or the reason none was possible), what changed,
+and any preview/undo request. For a blocked request, state the exact blocker and the smallest safe next action.
+Do not claim a visual result you have not checked.
 
 ${STUDIO_REFERENCES}`;
 
@@ -129,7 +144,7 @@ ${STUDIO_REFERENCES}`;
 export function ownAgentPrompt() {
   const prompt = readFileSync(new URL('./agent-prompt.md', import.meta.url), 'utf8').trim();
   const manual = readFileSync(join(dirname(require.resolve('openfilm/package.json')), 'MANUAL.md'), 'utf8').replaceAll('npx openfilm', 'openfilm').trim();
-  return `${prompt}\n\n## Pointing at Studio\n\n${STUDIO_REFERENCES}\n\n<manual>\n${manual}\n</manual>`;
+  return `${prompt}\n\n## Pointing at Studio\n\n${STUDIO_REFERENCES}\n\n## 任务\n\nUse the OpenFilm MCP tools for the storyboard and the timeline: \`read_project\`, \`read_storyboard\`, \`read_timeline\`, \`search_materials\`, \`edit_storyboard\`, \`edit_timeline\` and \`qc\`.\n\n## 要求\n\nThey validate every change. Do not edit \`film.html\` or \`.film/storyboard.json\` directly; use \`edit_timeline\` and \`edit_storyboard\`. You may create and edit pages/media with your file tools. Do not render or export: the person does that from Studio. TTS and music are not available yet. This section is authoritative if the manual below says otherwise.\n\n## 交付\n\nEvery turn says what changed, which tools were used, and any preview/undo request. For a blocked edit, state the blocker and the smallest safe next action.\n\n<manual>\n${manual}\n</manual>`;
 }
 
 /**
@@ -962,6 +977,7 @@ export class AgentSession {
    * @param {{ agent: string, cwd: string, resume?: string | null, binDir?: string | null, fallbackDir?: string | null,
    *           harness?: any,
    *           env?: Record<string, string>, logDir?: string | null,
+   *           mcpServers?: Array<{ type?: string, name: string, url?: string, command?: string, args?: string[], headers?: Array<{ name: string, value: string }> }>,
    *           skills?: { dataDir: string, mine?: string, allowed?: string[], mcpAllowed?: string[] } | null,
    *           onUpdate?: (update: any) => void, onPermission?: (params: any) => Promise<string | null>,
    *           onQuestion?: (ask: { message: string, toolCallId: string | null, questions: any[] }) => Promise<Record<string, { label?: string, text?: string }> | null>,
@@ -1127,7 +1143,7 @@ export class AgentSession {
 
     const params = {
       cwd: this.opts.cwd,
-      mcpServers: [],
+      mcpServers: Array.isArray(this.opts.mcpServers) ? this.opts.mcpServers : [],
       ...(skills?.additionalDirectories ? { additionalDirectories: skills.additionalDirectories } : {}),
       ...(claude ? { _meta: { systemPrompt: { append: instructions }, ...(skills?.claude ? { claudeCode: { options: skills.claude } } : {}) } } : {}),
     };
@@ -1154,6 +1170,15 @@ export class AgentSession {
     /* an agent on the protocol's older model and mode lists: the same choices, as config options */
     this.legacy = !session.configOptions && Boolean(session.models || session.modes);
     if (resumed) this.instructions = null;
+    /* A session carries the launch key in an MCP header; the turn log records the server, never the secret. */
+    const loggedParams = {
+      ...params,
+      mcpServers: (params.mcpServers ?? []).map((server) => ({
+        ...server,
+        ...(server.headers ? { headers: '[hidden]' } : {}),
+      })),
+      ...(resumed ? { sessionId: resume } : {}),
+    };
     this.info = {
       sessionId: session.sessionId,
       resumed,
@@ -1180,7 +1205,7 @@ export class AgentSession {
       path: { first: this.opts.binDir ?? null, last: this.opts.fallbackDir ?? null },
       fromShell: this.spec.fromShell ? Object.keys(shell).sort() : 'all',
       initialize: { request: { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: CLIENT_CAPABILITIES, clientInfo: CLIENT_INFO }, response: init },
-      session: { method: !resumed ? 'session/new' : caps.sessionCapabilities?.resume ? 'session/resume' : 'session/load', params: { ...params, ...(resumed ? { sessionId: resume } : {}) } },
+      session: { method: !resumed ? 'session/new' : caps.sessionCapabilities?.resume ? 'session/resume' : 'session/load', params: loggedParams },
       firstMessage: this.instructions,
       log: this.logging?.log ?? null,
       skills: skills?.log ?? null,

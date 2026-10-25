@@ -1,12 +1,15 @@
 // @ts-check
 /**
- * Agent cards: the editable prompts, model bindings and sampling settings behind the storyboard work.
+ * Agent cards: the editable prompts, model bindings and sampling settings behind the film.
  *
- * Every card has the same shape. Five cards start as the default work slots (storyboard, director,
- * query planning, visual review, continuity/assembly); a person's own card is not a different kind of
- * object. A card with a work slot takes part in that step; at most one enabled card owns a slot, so a
- * custom card can replace a default without creating an ambiguous pipeline. Deleting a default is
- * allowed; the step then reports that it has no agent instead of silently using a deleted prompt.
+ * One agent pipeline, with six work slots: storyboard, material, edit, audio, qc and
+ * conversation. `audio` is reserved for the audio/subtitle stage and disabled by default until that
+ * stage is implemented. A card with a work slot takes part in that step; at most one enabled card
+ * owns a slot.
+ *
+ * The prompts follow TEMP/AI剪辑Agent设计方案/Agent架构与提示词.md and are split into
+ * 任务 / 要求 / 交付. Older files used director/query/verify/continuity; they are migrated in place
+ * (director→conversation, query→material, verify→qc, continuity→edit).
  */
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -17,18 +20,27 @@ import { HttpError } from './http.mjs';
 import { writeAtomic } from './atomic.mjs';
 import { readProviderState } from './provider-cards.mjs';
 
-/** @typedef {'storyboard' | 'director' | 'query' | 'verify' | 'continuity'} AgentRole */
+/** @typedef {'storyboard' | 'material' | 'edit' | 'audio' | 'qc' | 'conversation'} AgentRole */
 /** @typedef {{ id: string, name: string, role: AgentRole | '', description: string, enabled: boolean, order: number, cardId: string, modelId: string, systemPrompt: string, temperature: number, maxTokens: number, topP: number, tools: string[], skills: string[] }} AgentCard */
-/** @typedef {{ revision: number, agents: AgentCard[] }} AgentState */
+/** @typedef {{ revision: number, promptVersion: number, agents: AgentCard[] }} AgentState */
 
 export const AGENT_ROLES = /** @type {const} */ ([
-  { id: 'storyboard', label: '分镜规划', hint: '把脚本/想法拆成镜头卡' },
-  { id: 'director', label: '导演对话', hint: '把自然语言变成受控修改提案' },
-  { id: 'query', label: '检索规划', hint: '为每个镜头生成检索词和硬条件' },
-  { id: 'verify', label: '画面审核', hint: '用视觉模型判断候选画面是否合适' },
-  { id: 'continuity', label: '连续性 / 装配', hint: '检查重复、节奏、景别与粗剪顺序' },
+  { id: 'storyboard', label: '分镜规划', hint: '解析输入、生成分镜、短词组查询与预检' },
+  { id: 'material', label: '素材检索', hint: '预检/正式检索、过滤、候选与覆盖报告' },
+  { id: 'edit', label: '剪辑装配', hint: '选片、时间线、EDL、转场与连续性' },
+  { id: 'audio', label: '音频字幕（预留）', hint: 'TTS、配乐、字幕与混音；当前未接入流水线' },
+  { id: 'qc', label: '自动质检', hint: '技术、编辑、合规与 Skill 一致性检查' },
+  { id: 'conversation', label: '对话剪辑', hint: '自然语言意图，经 MCP 工具修改时间线' },
 ]);
+
 const ROLE_IDS = new Set(AGENT_ROLES.map((role) => role.id));
+const LEGACY_ROLES = /** @type {Record<string, AgentRole>} */ ({
+  director: 'conversation',
+  query: 'material',
+  verify: 'qc',
+  continuity: 'edit',
+});
+const PROMPT_VERSION = 2;
 const FILE = () => join(studioHome(), 'agent-cards.json');
 const id = (/** @type {string} */ prefix) => `${prefix}_${randomBytes(6).toString('hex')}`;
 const text = (/** @type {unknown} */ value, /** @type {number} */ max) => String(value ?? '').trim().slice(0, max);
@@ -39,37 +51,110 @@ const number = (value, fallback, min, max) => {
 };
 
 const DEFAULT_PROMPTS = /** @type {Record<AgentRole, string>} */ ({
-  storyboard: `你是 OpenFilm 的分镜规划 Agent。把输入的脚本、简报或一句话拆成可拍摄、可匹配素材的分镜。
-只返回 JSON，字段为 title、brief、scenes、shots。每个 shot 要有 title、narration、visualIntent、must、avoid、targetMs。
-保持原文事实和顺序，不编造台词；画面要求要具体，写清景别、环境、动作和不能出现的内容。没有素材依据时不要假装已经匹配。`,
-  director: `你是 OpenFilm 的导演 Agent。用户已经授权你直接修改分镜，系统会用撤销兜底，所以不要只给提案，也不要把“要不要改”问回给用户。
-只返回 JSON：{"reply":"简短中文说明","operations":[],"intent":"edit|match|none"}。每条操作都必须有 type。允许的操作：
-setTargetDuration {durationMs}；distributeDurations {durationMs?}（按内容自行分配长短镜头）；setShotDuration {shotId,targetMs}；
-updateShot {shotId,patch}；deleteShot {shotId}；duplicateShot {shotId}；reorderShots {shotIds}；moveShot {shotId,index}；
-addShot {sceneId?,index?,shot}；addScene {title}；updateScene {sceneId,title}；setMatch {shotId,candidateId}；clearMatch {shotId}；
-rematchShots {shotIds?}；setBrief {brief}。
-用户说“你决定时长/调整节奏/减少重复/保持开头”等要求时，直接根据内容生成完整 operations，不要要求用户再指定秒数或镜头。
-不得修改锁定镜头，不得编造素材路径；确实无法执行的要求才在 reply 里说明。`,
-  query: `你是 OpenFilm 的检索规划 Agent。为每个镜头生成 1-3 条适合视觉语义检索的中文查询，并提取必须满足、必须避免、时长范围、景别和运镜条件。
-查询要具体到画面，不要只复述旁白。只返回可解析的 JSON。`,
-  verify: `你是 OpenFilm 的画面审核 Agent。根据镜头的画面意图、必须/避免条件和候选视频的关键帧，判断候选是否适合。
-只返回 JSON：{"candidates":[{"index":1,"verdict":"pass | uncertain | fail","confidence":0,"reason":"简短理由","desc":"一到两句中文，描述这个候选画面实际能看到的内容"}]}。
-desc 只写画面里真实可见的主体、环境、动作、景别和氛围，不要编造；不要因为分数高就通过，也不要伪造你没有看到的画面。`,
-  continuity: `你是 OpenFilm 的连续性与装配 Agent。检查相邻镜头的景别、运镜、人物方向、重复素材、节奏和目标时长。
-只提出可执行的调整建议，不伪造素材，不修改锁定镜头。输出简洁的 JSON 或逐条问题清单。`,
+  storyboard: `## 任务
+你是分镜 Agent。把用户输入变成可执行、可检索的分镜，不直接剪片。
+
+## 要求
+1. 解析输入：按编号、段落、场景标题拆出画面、动作、台词、时长、情绪和转场；整段 brief 提取主题、受众、平台、风格、总时长、必含/排除项。
+2. 混合输入优先保留镜头结构，缺失字段由 brief 补；不编造品牌事实，不确定内容标为“待确认”或低置信。
+3. 建立叙事结构（开场、发展、转折、落点），拆分场景和镜头；每镜必须有目的、画面主体/动作、景别、机位、运动、时长、情绪、转场、旁白和字幕。
+4. 每镜生成 2–4 组短词组查询（2–6 个词），给出必含词、排除词、时长下限、画幅、版权和画质；总时长符合项目配置。
+5. 预检最多 3 轮：先换查询，再改动作/场景/景别，再拆分/合并镜头，再放宽条件；仍不达标就标记缺口，不用库外素材补洞。
+6. 不修改时间线，不伪造素材路径。只返回可解析 JSON，不写分析报告。
+
+## 交付
+只返回 JSON：
+{"title":"片名","brief":{"durationMs":30000,"aspect":"16:9","tone":"","notes":"假设、风险和待确认项"},"scenes":[{"title":"场景","shots":[{"title":"镜头","narration":"旁白","visualIntent":"具体画面","must":["必含"],"avoid":["排除"],"targetMs":4000}]}],"materialPlan":[{"shotTitle":"镜头","queries":["短词组"],"must":[],"avoid":[],"minMs":0}],"coverage":{"rounds":0,"gaps":[]},"assumptions":[],"risks":[]}`,
+
+  material: `## 任务
+你是素材检索 Agent。完成预检或正式检索，把分镜的短词组和参考图变成候选片段、证据和覆盖报告。
+
+## 要求
+1. 预检模式只查候选和覆盖，不下载、不生成、不剪辑；正式模式返回可用于时间线的候选。
+2. 文本查询优先 2–6 个短词组；有参考图时同时走图像查询；多组查询分别召回后做排名融合。
+3. 硬过滤：时长、画幅、版权、画质、语言、禁用元素；重排考虑语义、时长、运动、景别、连续性和重复惩罚。
+4. 每镜保留 8–12 个候选并做多样性选择；找不到就报告缺口，不用库外素材补洞。
+5. 不直接改时间线，不伪造素材路径或元数据。
+6. 只返回可解析 JSON。
+
+## 交付
+只返回 JSON：
+{"mode":"preflight|formal","queries":["检索短词组"],"candidates":[{"shot":"镜头","clipId":"","path":"","startMs":0,"endMs":0,"score":0,"reason":""}],"selected":[{"shot":"镜头","candidateId":"","inMs":0,"outMs":0}],"coverage":{"shotCount":0,"covered":0,"gaps":[]},"evidence":[],"gaps":[]}`,
+
+  edit: `## 任务
+你是剪辑 Agent。根据已批准分镜、候选素材和 Skill 组装时间线，或对现有时间线做连续性修正。
+
+## 要求
+1. 每镜优先选首选候选，保留备选；入出点保留动作起势/收势，不切在动作中间。
+2. 主轨不重叠；锁定轨道、锁定片段和用户的 overrides 不可改。
+3. 转场服务叙事；旁白、字幕、配乐先占位，不在此阶段生成 TTS 或配乐。
+4. 生成 EDL：cuts、入出点、速度、层、转场、音频、字幕；每个选择写理由，有风险写风险。
+5. 只用已有素材，不伪造路径，不渲染、不导出；结构变更（镜头数量/顺序/叙事/画幅/总时长）直接通过时间线工具完成。
+6. 只返回可解析 JSON。
+
+## 交付
+只返回 JSON：
+{"issues":[],"operations":[],"filmOps":[],"timeline":{"tracks":[],"durationMs":0},"edl":{"cuts":[],"audio":[],"subtitles":[]},"selection_reasons":[],"risks":[]}`,
+
+  audio: `## 任务
+你是音频字幕 Agent（预留角色）。根据 EDL、分镜旁白、用户字幕/提示词和 Skill，生成声音与字幕方案。
+
+## 要求
+1. 旁白用 TTS 生成，保留词级/句级时间；旁白过长时优先压缩文本或调整停顿，不随意砍画面。
+2. 配乐按情绪、节奏、时长推荐；没有合适曲目再生成；配乐必须 ducking，不能压过旁白。
+3. 字幕按 TTS 时间对齐；用户提供字幕时直接对齐；断句、行长、安全区、语言符合平台和字幕 Skill。
+4. 品牌名和术语按发音 Skill 处理；不直接改分镜结构。
+5. 当前版本不接入工具，不执行 TTS、配乐生成或最终混音；只产出方案，由后续音效界面实现。
+6. 只返回可解析 JSON。
+
+## 交付
+只返回 JSON：
+{"audio_plan":{"voice":"","segments":[],"music":[],"ducking":{}},"subtitle_plan":{"language":"","lines":[],"style":{}},"mix":{"master":0,"dialog":0,"music":0},"risks":[]}`,
+
+  qc: `## 任务
+你是质检 Agent。检查草稿或成片的技术、编辑、合规和 Skill 一致性，并给出可执行修复。
+
+## 要求
+1. 技术：时长、黑帧、空轨、素材缺失、音频削波、字幕出框、画幅和帧率。
+2. 编辑：镜头覆盖分镜、旁白对齐、节奏、重复素材、开头钩子、结尾落点。
+3. 合规：品牌禁用项、平台规则、版权、字幕可读性；Skill：是否违反已激活的品牌、平台、剪辑、字幕和配乐规则。
+4. 每个问题给严重级别、证据和修复建议；最多两轮自动修复，仍失败记为已知风险。
+5. 不擅自改分镜结构，结构问题交回流程控制器；不渲染、不导出、不伪造画面。
+6. 只返回可解析 JSON。若任务只是描述一个素材，返回 {"desc":"..."}。
+
+## 交付
+只返回 JSON：
+{"candidates":[{"index":1,"verdict":"pass|uncertain|fail","confidence":0,"reason":"","desc":"画面实际可见内容"}],"issues":[],"qc_report":{"blocking":[],"warnings":[]},"fixes":[],"blocking":[],"risks":[]}`,
+
+  conversation: `## 任务
+你是对话剪辑 Agent。理解用户修改意图，读取项目、分镜、时间线和选中引用，通过受控工具直接修改。
+
+## 要求
+1. 每次修改前读取最新时间线；每轮创建撤销快照；锁定对象硬拒绝。
+2. 判断意图：画面、节奏、素材、旁白、字幕、音乐、转场；只通过受控工具修改，不直接写 film.html 或 .film/storyboard.json。
+3. 剪辑阶段不再读取或修改分镜；项目上下文包含轨道、clip、画幅和可用素材路径，只用已有素材。
+4. 结构变更（镜头数量、顺序、叙事、画幅、总时长）直接通过 filmOps 完成；不要读取或修改分镜。filmOps 使用「clip」字段（不是 clipId），「at」单位为秒。支持 set/move/insert/remove/split/props/fields/stage/track/reorder。
+5. 不静默覆盖用户或其他 Agent 的修改；revision 冲突时重新读取再试。
+6. 不渲染、不导出、不生成 TTS 或配乐；这些是用户动作或尚未实现。
+7. 只返回可解析 JSON。
+
+## 交付
+只返回 JSON：
+{"reply":"简短中文说明","operations":[],"filmOps":[],"intent":"edit|match|none","preview_request":null,"snapshot":null}`,
 });
 
 const DEFAULTS = /** @type {AgentCard[]} */ ([
-  { id: 'agent_storyboard', name: '分镜规划', role: 'storyboard', description: '脚本/一句话 → 分镜卡', enabled: true, order: 0, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.storyboard, temperature: 0.45, maxTokens: 6000, topP: 0.95, tools: [], skills: [] },
-  { id: 'agent_director', name: '导演对话', role: 'director', description: '对话 → 修改提案', enabled: true, order: 1, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.director, temperature: 0.2, maxTokens: 2500, topP: 0.9, tools: [], skills: [] },
-  { id: 'agent_query', name: '检索规划', role: 'query', description: '镜头 → 检索计划', enabled: true, order: 2, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.query, temperature: 0.2, maxTokens: 2000, topP: 0.9, tools: ['web-search'], skills: [] },
-  { id: 'agent_verify', name: '画面审核', role: 'verify', description: '候选画面 → 置信度与理由', enabled: true, order: 3, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.verify, temperature: 0, maxTokens: 1200, topP: 1, tools: [], skills: [] },
-  { id: 'agent_continuity', name: '连续性 / 装配', role: 'continuity', description: '全片节奏与粗剪顺序', enabled: true, order: 4, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.continuity, temperature: 0.1, maxTokens: 2500, topP: 0.9, tools: [], skills: [] },
+  { id: 'agent_storyboard', name: '分镜规划', role: 'storyboard', description: '脚本/想法 → 可执行分镜与预检', enabled: true, order: 0, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.storyboard, temperature: 0.45, maxTokens: 6000, topP: 0.95, tools: [], skills: [] },
+  { id: 'agent_material', name: '素材检索', role: 'material', description: '镜头 → 检索条件、候选与覆盖', enabled: true, order: 1, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.material, temperature: 0.2, maxTokens: 2500, topP: 0.9, tools: ['web-search'], skills: [] },
+  { id: 'agent_edit', name: '剪辑装配', role: 'edit', description: '粗剪、连续性与可执行 EDL', enabled: true, order: 2, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.edit, temperature: 0.1, maxTokens: 3000, topP: 0.9, tools: [], skills: [] },
+  { id: 'agent_audio', name: '音频字幕（预留）', role: 'audio', description: 'TTS、配乐、字幕与混音；暂未接入', enabled: false, order: 3, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.audio, temperature: 0.2, maxTokens: 2500, topP: 0.9, tools: [], skills: [] },
+  { id: 'agent_qc', name: '自动质检', role: 'qc', description: '候选/成片 → 证据、修复与风险', enabled: true, order: 4, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.qc, temperature: 0, maxTokens: 1600, topP: 1, tools: [], skills: [] },
+  { id: 'agent_conversation', name: '对话剪辑', role: 'conversation', description: '自然语言 ↔ 受控时间线修改', enabled: true, order: 5, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.conversation, temperature: 0.2, maxTokens: 4000, topP: 0.9, tools: [], skills: [] },
 ]);
 
 export function defaultPrompts() { return { ...DEFAULT_PROMPTS }; }
 
-/** Read the cards; a missing file starts with the five defaults and, when possible, their old model bindings. */
+/** Read the cards; a missing file starts with the defaults and, when possible, their old model bindings. */
 export function readAgentState() {
   if (!existsSync(FILE())) return migrate();
   try { return normalizeState(JSON.parse(readFileSync(FILE(), 'utf8'))); }
@@ -78,16 +163,19 @@ export function readAgentState() {
 
 export function normalizeState(/** @type {unknown} */ input) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? /** @type {Record<string, any>} */ (input) : {};
+  const forcePrompts = !Number.isFinite(Number(raw.promptVersion)) || Number(raw.promptVersion) < PROMPT_VERSION;
   const seenRoles = new Set();
   const agents = /** @type {AgentCard[]} */ ((Array.isArray(raw.agents) ? raw.agents : []).slice(0, 80).map((item, index) => {
     if (!item || typeof item !== 'object') return null;
-    const role = ROLE_IDS.has(item.role) ? /** @type {AgentRole} */ (item.role) : '';
+    const askedRole = text(item.role, 60);
+    const role = ROLE_IDS.has(/** @type {any} */ (askedRole)) ? /** @type {AgentRole} */ (askedRole) : LEGACY_ROLES[askedRole] ?? '';
     let enabled = item.enabled !== false;
     /* one active owner per work slot: a second enabled card is kept but paused, never ambiguous */
     if (role) {
       if (seenRoles.has(role)) enabled = false;
       else if (enabled) seenRoles.add(role);
     }
+    const askedPrompt = text(item.systemPrompt, 30_000);
     return /** @type {AgentCard} */ ({
       id: text(item.id, 80) || id('agent'),
       name: text(item.name, 120) || 'Agent',
@@ -97,14 +185,8 @@ export function normalizeState(/** @type {unknown} */ input) {
       order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
       cardId: text(item.cardId, 80),
       modelId: text(item.modelId, 200),
-      systemPrompt: (() => {
-        const asked = text(item.systemPrompt, 30_000);
-        /* the old default told the director to propose, not edit: people who never changed it get
-           the direct-edit default, while a custom prompt is kept untouched */
-        if (role === 'director' && (!asked || /不直接修改项目|受控编辑提案/.test(asked))) return DEFAULT_PROMPTS.director;
-        if (role === 'verify' && (!asked || (asked.includes('你是 OpenFilm 的画面审核 Agent') && !asked.includes('desc')))) return DEFAULT_PROMPTS.verify;
-        return asked || (role ? DEFAULT_PROMPTS[role] : '');
-      })(),
+      /* v2 is a one-time forced prompt migration; after the UI saves this version, later edits stay. */
+      systemPrompt: role && (forcePrompts || !askedPrompt) ? DEFAULT_PROMPTS[role] : askedPrompt,
       temperature: number(item.temperature, 0.2, 0, 2),
       maxTokens: Math.round(number(item.maxTokens, 3000, 64, 200_000)),
       topP: number(item.topP, 0.9, 0.01, 1),
@@ -112,8 +194,14 @@ export function normalizeState(/** @type {unknown} */ input) {
       skills: Array.isArray(item.skills) ? [...new Set(item.skills.map((/** @type {unknown} */ skill) => text(skill, 80)).filter((/** @type {string} */ skill) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(skill)))].slice(0, 40) : [],
     });
   }).filter(Boolean));
+  /* v2 also introduces the reserved audio/subtitle slot: disabled, no pipeline use, but visible in
+     Settings so its task/requirements/delivery prompt can be reviewed. */
+  if (forcePrompts && !agents.some((agent) => agent.role === 'audio')) {
+    const audio = DEFAULTS.find((agent) => agent.role === 'audio');
+    if (audio) agents.push({ ...audio });
+  }
   agents.sort((a, b) => a.order - b.order).forEach((agent, index) => { agent.order = index; });
-  return /** @type {AgentState} */ ({ revision: Number(raw.revision) || 0, agents });
+  return /** @type {AgentState} */ ({ revision: Number(raw.revision) || 0, promptVersion: PROMPT_VERSION, agents });
 }
 
 export async function saveAgentState(/** @type {unknown} */ input) {
@@ -151,7 +239,7 @@ function cardEnabled(/** @type {any} */ card, /** @type {string} */ category) {
   return card.enabled && card.category === category;
 }
 
-/** First-run migration: keep the old storyboard/director/verify model bindings when their model still exists. */
+/** First-run migration: keep the old storyboard/director/query/verify/continuity bindings when their model still exists. */
 function migrate() {
   const providerState = readProviderState();
   /** @type {any} */
@@ -163,12 +251,19 @@ function migrate() {
     const model = card?.models.find((item) => item.id === modelId);
     return card && model ? { cardId: card.id, modelId: model.id } : null;
   };
+  const legacyKey = /** @type {Record<AgentRole, string>} */ ({
+    storyboard: 'storyboard',
+    material: 'query',
+    edit: 'continuity',
+    audio: 'audio',
+    qc: 'verify',
+    conversation: 'director',
+  });
   const agents = DEFAULTS.map((agent) => {
-    const legacy = agent.role === 'storyboard' ? old?.agents?.storyboard : agent.role === 'director' || agent.role === 'query' ? old?.agents?.director : agent.role === 'verify' ? old?.agents?.verify : '';
-    const found = oldModelCard(legacy);
+    const found = oldModelCard(old?.agents?.[legacyKey[/** @type {AgentRole} */ (agent.role)]]);
     return found ? { ...agent, ...found } : { ...agent };
   });
-  const state = { revision: 1, agents };
+  const state = { revision: 1, promptVersion: PROMPT_VERSION, agents };
   try { writeAtomic(FILE(), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 }); } catch { /* first save can retry */ }
   return state;
 }

@@ -2460,6 +2460,9 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
   /* the keys, read fresh each time (they act on what is selected and marked now) */
   const keyNowRef = React.useRef<(event: KeyboardEvent) => void>(() => {});
   keyNowRef.current = (event) => {
+    /* A media preview owns the keyboard (I/O, video controls); the editor's shortcuts must not
+       mark the film's range or clear a selection behind it. */
+    if (document.querySelector('[data-media-preview]')) return;
     if (referKeysRef.current(event)) return;
     const el = event.target as HTMLElement | null;
     const cmd = keyAction(event);

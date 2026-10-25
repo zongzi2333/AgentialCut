@@ -267,7 +267,7 @@ function VisualHitCard({ hit, onAssign, onPreview }: { hit: SemanticHit; onAssig
 
 function CandidateCard({ candidate, adopted, onAdopt, onPreview }: { candidate: StoryboardCandidate; adopted: boolean; onAdopt: () => void; onPreview: () => void }) {
   const t = useT();
-  const score = Math.round(Math.max(0, Math.min(1, candidate.review?.confidence ?? candidate.score)) * 100);
+  const score = Math.round(Math.max(0, Math.min(1, candidate.score)) * 100);
   const low = score < 55;
   const bad = score < 35;
   return (

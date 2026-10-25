@@ -248,6 +248,18 @@ export interface StoryboardChatResponse {
   proposal: StoryboardProposal;
   intent?: string;
 }
+/** The one conversation endpoint. Storyboard turns carry operations/proposal; edit turns may apply filmOps. */
+export interface AgentChatResponse {
+  reply: string;
+  operations?: Array<Record<string, unknown>>;
+  proposal?: StoryboardProposal;
+  intent?: string;
+  applied?: boolean;
+  rev?: string;
+  timeline?: unknown;
+  preview_request?: unknown;
+}
+export interface AgentChatMessage { id: string; role: 'user' | 'agent'; text: string; at: number }
 export interface ModelLogEntry {
   id: number;
   at: number;
@@ -300,13 +312,13 @@ export interface ProviderCatalogEntry {
 }
 export interface ProviderCardsResponse { state: ProviderStateView; catalog: ProviderCatalogEntry[]; categories: ProviderCategoryInfo[] }
 export interface ProviderTestResult { ok: boolean; elapsedMs: number; detail: string }
-export interface AgentRoleInfo { id: 'storyboard' | 'director' | 'query' | 'verify' | 'continuity'; label: string; hint: string }
+export interface AgentRoleInfo { id: 'storyboard' | 'material' | 'edit' | 'audio' | 'qc' | 'conversation'; label: string; hint: string }
 export interface AgentCard {
   id: string; name: string; role: AgentRoleInfo['id'] | ''; description: string; enabled: boolean; order: number;
   cardId: string; modelId: string; systemPrompt: string; temperature: number; maxTokens: number; topP: number; tools: string[];
   skills: string[];
 }
-export interface AgentCardsResponse { state: { revision: number; agents: AgentCard[] }; roles: AgentRoleInfo[]; prompts?: Record<string, string> }
+export interface AgentCardsResponse { state: { revision: number; promptVersion: number; agents: AgentCard[] }; roles: AgentRoleInfo[]; prompts?: Record<string, string> }
 /** Said on the window when they change, for what plays by them (the preview's proxies). */
 export const PREFS_EVENT = 'openfilm:prefs';
 /** Said on the window when the library moved, for the Projects list. */
@@ -365,8 +377,11 @@ export const api = {
   opened: (id: string) => call<{ project: Project }>(`${p(id)}/opened`, { method: 'POST' }),
   edit: (id: string, base: string | null, ops: Op[]) => call<{ text: string; rev: string; value: Film; doc: Film; rebased: boolean }>(`${p(id)}/edit`, { method: 'POST', json: { base, ops } }),
   files: (id: string) => call<Listing>(`${p(id)}/files`),
-  /** the editing stage's assistant conversation (advice only; edits stay in Studio's undoable tools) */
-  editChat: (id: string, text: string) => call<{ reply: string }>(`${p(id)}/edit/chat`, { method: 'POST', json: { text } }).then((r) => r.reply),
+  /** the one conversation endpoint: storyboard operations or applied timeline edits, by scope */
+  agentChat: (id: string, body: { text: string; scope?: 'storyboard' | 'edit'; selectedIds?: string[]; selectedClipIds?: string[] }) => call<AgentChatResponse>(`${p(id)}/agent/chat`, { method: 'POST', json: body }),
+  /** the browser conversation's stored messages, per scope */
+  agentChatHistory: (id: string, scope: 'storyboard' | 'edit') => call<{ messages: AgentChatMessage[] }>(`${p(id)}/agent/chat?scope=${scope}`).then((r) => r.messages),
+  clearAgentChat: (id: string, scope: 'storyboard' | 'edit') => call<{ messages: AgentChatMessage[] }>(`${p(id)}/agent/chat?scope=${scope}`, { method: 'DELETE' }),
   assetDescriptions: (id: string) => call<{ descriptions: Record<string, string> }>(`${p(id)}/asset-descriptions`).then((r) => r.descriptions),
   describeAsset: (id: string, path: string, regenerate = false) => call<{ desc: string }>(`${p(id)}/asset-descriptions`, { method: 'POST', json: { path, regenerate } }).then((r) => r.desc),
   /** the editor's settings of the project (`.film/settings.json`): its frame rate, its tracks' names */
@@ -434,7 +449,6 @@ export const api = {
   generateStoryboard: (id: string, body: { text?: string; prompt?: string; brief?: Partial<StoryboardBrief> }) => call<{ storyboard: StoryboardDocument; source: 'local' | 'ai' }>(`${p(id)}/storyboard/generate`, { method: 'POST', json: body }),
   matchStoryboard: (id: string, body: { shotIds?: string[]; topK?: number } = {}) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard/match`, { method: 'POST', json: body }).then((r) => r.storyboard),
   fillStoryboard: (id: string, body: { shotId: string; prompt?: string; duration?: number }) => call<{ storyboard: StoryboardDocument; path: string }>(`${p(id)}/storyboard/fill`, { method: 'POST', json: body }),
-  chatStoryboard: (id: string, body: { text: string; selectedIds?: string[] }) => call<StoryboardChatResponse>(`${p(id)}/storyboard/chat`, { method: 'POST', json: body }),
   applyStoryboard: (id: string, body: { baseRevision: number; operations: Array<Record<string, unknown>> }) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard/apply`, { method: 'POST', json: body }).then((r) => r.storyboard),
   handoffStoryboard: (id: string) => call<{ storyboard: StoryboardDocument; clips: HandoffClip[]; gaps: string[] }>(`${p(id)}/storyboard/handoff`, { method: 'POST', json: {} }),
   /** the developer's floating model-call log */
@@ -444,7 +458,7 @@ export const api = {
   startStoryboardRun: (id: string, body: { text?: string; prompt?: string; brief?: Partial<StoryboardBrief> }) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run`, { method: 'POST', json: body }).then((r) => r.run),
   cancelStoryboardRun: (id: string) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run/cancel`, { method: 'POST', json: {} }).then((r) => r.run),
   undoStoryboardRun: (id: string) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard/run/undo`, { method: 'POST', json: {} }).then((r) => r.storyboard),
-  /** providers → models → agents for the film's own storyboard/director agents */
+  /** providers → models → agents for the film's unified storyboard/edit work slots */
   /** the unified provider cards: card catalog, redacted state, save/order/defaults, connection test */
   providerCards: () => call<ProviderCardsResponse>('provider-cards'),
   saveProviderCards: (state: ProviderStateView) => call<ProviderStateView>('provider-cards', { method: 'PUT', json: state }),

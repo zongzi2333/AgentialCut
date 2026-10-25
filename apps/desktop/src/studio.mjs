@@ -61,7 +61,7 @@ async function takeOver(home, log) {
 /**
  * @param {{ home: string, port: number, env: Record<string, string>, onOpen: (url: string) => void,
  *           onBrowser: (state: { state: string, message?: string }) => void, log: (line: string) => void }} options
- * @returns {Promise<{ origin: string, filmOrigin: string, key: string, child: Electron.UtilityProcess }>}
+ * @returns {Promise<{ origin: string, filmOrigin: string, key: string, mcpKey: string, child: Electron.UtilityProcess }>}
  */
 function fork({ port, env, onOpen, onBrowser, log }) {
   return new Promise((resolve, reject) => {
@@ -78,7 +78,7 @@ function fork({ port, env, onOpen, onBrowser, log }) {
       if (message?.type === 'ready' && !settled) {
         settled = true;
         clearTimeout(timer);
-        resolve({ origin: message.origin, filmOrigin: message.filmOrigin, key: message.key, child });
+        resolve({ origin: message.origin, filmOrigin: message.filmOrigin, key: message.key, mcpKey: message.mcpKey, child });
       } else if (message?.type === 'failed' && !settled) {
         settled = true;
         clearTimeout(timer);

@@ -1,7 +1,7 @@
 /**
- * The editing stage's AI conversation. It is a real conversation with the configured director agent:
- * answers about the cut, continuity, pacing and what to change next. It does not silently rewrite the
- * timeline; Studio's own editing tools and undo remain the place where changes happen.
+ * The editing stage's AI conversation. It uses the same conversation agent and controlled tool
+ * surface as the storyboard pane: answers about the cut, continuity, pacing and what to change,
+ * and applies validated timeline operations. Studio's undo remains the safety net.
  */
 import * as React from 'react';
 import { ArrowUp, Loader2, Sparkles, X } from 'lucide-react';
@@ -9,11 +9,12 @@ import { api } from '@/api';
 import { PANE_BAR, PANE_BTN, PANE_TITLE } from '../dock-pane-bar';
 
 type Message = { id: string; role: 'user' | 'agent'; text: string };
+const WELCOME = '我可以帮你分析节奏、连续性、镜头取舍和下一步怎么剪。告诉我你想改什么，或直接问当前时间线的问题。';
 
 export function EditChatPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const [ask, setAsk] = React.useState('');
   const [messages, setMessages] = React.useState<Message[]>([
-    { id: 'hello', role: 'agent', text: '我可以帮你分析节奏、连续性、镜头取舍和下一步怎么剪。告诉我你想改什么，或直接问当前时间线的问题。' },
+    { id: 'hello', role: 'agent', text: WELCOME },
   ]);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -21,6 +22,14 @@ export function EditChatPanel({ projectId, onClose }: { projectId: string; onClo
   const scroller = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => { scroller.current?.scrollTo({ top: scroller.current.scrollHeight }); }, [messages, busy]);
+  React.useEffect(() => {
+    let live = true;
+    void api.agentChatHistory(projectId, 'edit').then((stored) => {
+      if (!live) return;
+      setMessages(stored.length ? stored : [{ id: 'hello', role: 'agent', text: WELCOME }]);
+    }).catch(() => { /* the panel still works when history cannot be read */ });
+    return () => { live = false; };
+  }, [projectId]);
 
   const send = async () => {
     const text = ask.trim();
@@ -31,7 +40,8 @@ export function EditChatPanel({ projectId, onClose }: { projectId: string; onClo
     setMessages((current) => [...current, { id, role: 'user', text }]);
     setBusy(true);
     try {
-      const reply = await api.editChat(projectId, text);
+      const result = await api.agentChat(projectId, { text, scope: 'edit' });
+      const reply = result.applied ? `${result.reply}（已应用到时间线）` : result.reply;
       setMessages((current) => [...current, { id: `${id}_a`, role: 'agent', text: reply }]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

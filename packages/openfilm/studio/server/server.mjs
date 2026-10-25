@@ -66,6 +66,9 @@ import { applyOperations, distributeDurations, handoffClips, localProposal, matc
 import { agentReady, callAgent, parseJsonReply, storyboardSchemaHint, testConnection } from './agent-runtime.mjs';
 import { readProviderState, redactState, saveProviderState, CATALOG, CATEGORIES, cardConnection, syncLegacyRuntime } from './provider-cards.mjs';
 import { readAgentState, saveAgentState, AGENT_ROLES, defaultPrompts } from './agent-cards.mjs';
+import { applyFilmOps, conversationTurn, editContext, storyboardContext } from './agent-flow.mjs';
+import { appendAgentChat, clearAgentChat, readAgentChat } from './agent-chat.mjs';
+import { handleMcpRequest } from './mcp.mjs';
 import { PIPELINE_STEPS, beginStep, clearUndo, emptyRun, failStep, finishStep, isCancelled, readRun, readUndo, skipStep, step, writeRun, writeUndo } from './pipeline.mjs';
 import { clearApi, listApi, recordApi } from './api-log.mjs';
 import { clearModelCalls, listModelCalls } from './model-log.mjs';
@@ -221,10 +224,10 @@ async function ensureAssetDescription(
   const libraryId = info.libraryId || project.id;
   const saved = await getDescription(libraryId, info.path).catch(() => null);
   if (saved?.desc && !regenerate) return saved.desc;
-  if (!agentReady('verify')) return null;
+  if (!agentReady('qc')) return null;
   const image = await materialImageData(project, info, semanticIndex, base);
   if (!image) return null;
-  const reply = await callAgent('verify', [{
+  const reply = await callAgent('qc', [{
     role: 'user',
     content: [
       { type: 'text', text: `Describe this material for a video editor. One or two concise Chinese sentences about what is actually visible: subject, setting, action, shot size and mood. Do not invent anything not visible. Material: ${JSON.stringify({ name: info.name ?? '', kind: info.kind ?? '' })}\nReturn only JSON: {"desc":"..."}.` },
@@ -240,14 +243,14 @@ async function ensureAssetDescription(
   }
   desc = desc.trim().slice(0, 2000);
   if (!desc) return null;
-  await saveDescription(libraryId, info.path, desc, { by: 'agent', model: 'verify' }).catch(() => {});
+  await saveDescription(libraryId, info.path, desc, { by: 'agent', model: 'qc' }).catch(() => {});
   return desc;
 }
 
-/** The query agent's search words; failures fall back to the shot's own visual intent. */
+/** The material agent's search words; failures fall back to the shot's own visual intent. */
 function pipelineQueryPlanner(/** @type {any} */ project) {
   return async (/** @type {any} */ shot, /** @type {string} */ fallback) => {
-    const reply = await callAgent('query', [{
+    const reply = await callAgent('material', [{
       role: 'user',
       content: `SHOT:\n${JSON.stringify({ title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, must: shot.must, avoid: shot.avoid, targetMs: shot.targetMs })}\n\nReturn only JSON: {"queries":["Chinese visual search query"]}.`,
     }], { project });
@@ -275,7 +278,7 @@ async function reviewShot(/** @type {any} */ project, /** @type {any} */ shot, /
       { type: 'image_url', image_url: { url: image } },
     ])),
   ];
-  const reply = await callAgent('verify', [{ role: 'user', content }], { project });
+  const reply = await callAgent('qc', [{ role: 'user', content }], { project });
   const parsed = parseJsonReply(reply);
   const reviews = Array.isArray(parsed?.candidates) ? parsed.candidates : [];
   for (const review of reviews) {
@@ -289,17 +292,14 @@ async function reviewShot(/** @type {any} */ project, /** @type {any} */ shot, /
     };
     if (typeof review?.desc === 'string' && review.desc.trim()) {
       const existing = await getDescription(candidate.libraryId || project.id, candidate.path).catch(() => null);
-      if (!existing?.desc) await saveDescription(candidate.libraryId || project.id, candidate.path, review.desc, { by: 'agent', model: 'verify' }).catch(() => {});
+      if (!existing?.desc) await saveDescription(candidate.libraryId || project.id, candidate.path, review.desc, { by: 'agent', model: 'qc' }).catch(() => {});
     }
   }
-  const rank = (/** @type {any} */ candidate) => candidate.review?.verdict === 'fail' ? 0 : candidate.review?.verdict === 'uncertain' ? 1 : candidate.review ? 2 : 1;
-  const selected = [...candidates].sort((a, b) => rank(b) - rank(a) || (Number(b.review?.confidence ?? b.score) - Number(a.review?.confidence ?? a.score)))[0] ?? null;
-  if (selected) {
-    const confidence = Math.round(Math.max(0, Math.min(1, Number(selected.review?.confidence ?? selected.score) || 0)) * 100);
-    shot.match.selectedId = selected.id;
-    shot.match.confidence = confidence;
-    shot.match.state = selected.review?.verdict === 'fail' || confidence < 55 ? 'review' : 'matched';
-  }
+  const selected = candidates.find((/** @type {any} */ candidate) => candidate.id === shot.match.selectedId) ?? candidates[0] ?? null;
+  shot.match = {
+    ...shot.match,
+    state: shot.match.state === 'gap' ? 'gap' : (selected?.review?.verdict === 'fail' || shot.match.confidence < 55 ? 'review' : 'matched'),
+  };
   return true;
 }
 
@@ -350,23 +350,23 @@ async function runRoughcutPipeline(/** @type {any} */ project, /** @type {any} *
     await mark();
     if (await check()) throw new Error('cancelled');
 
-    /* 2. The query Agent plans words; the semantic index returns several candidates per shot. */
+    /* 2. The material Agent plans words; the semantic index returns several candidates per shot. */
     beginStep(run, 'query');
     beginStep(run, 'match');
     await mark();
-    const planning = agentReady('query') ? pipelineQueryPlanner(project) : null;
+    const planning = agentReady('material') ? pipelineQueryPlanner(project) : null;
     const matched = await matchStoryboard(generated, project, semanticIndex, { topK: readPrefs().storyboard.candidateCount }, planning);
     const matchedSaved = await saveStoryboard(project, matched, generated.revision);
     run.storyboardRevision = matchedSaved.revision;
-    finishStep(run, 'query', planning ? '由检索规划 Agent 生成查询' : '未启用检索 Agent，使用画面语义');
+    finishStep(run, 'query', planning ? '由素材检索 Agent 生成查询' : '未启用检索 Agent，使用画面语义');
     finishStep(run, 'match', `${matchedSaved.shots.filter((/** @type {any} */ shot) => shot.match.selectedId).length}/${matchedSaved.shots.length} 个镜头有候选`);
     await mark();
     if (await check()) throw new Error('cancelled');
 
-    /* 3. Visual review is optional; without a VL binding the semantic confidence already adopted
-       in matchStoryboard is kept. */
-    if (!agentReady('verify')) {
-      skipStep(run, 'verify', '未启用画面审核 Agent，保留检索置信度');
+    /* 3. Automatic QC: visual review is optional; without a VL binding the semantic confidence
+       already adopted in matchStoryboard is kept. */
+    if (!agentReady('qc')) {
+      skipStep(run, 'verify', '未启用自动质检 Agent，保留检索置信度');
     } else {
       beginStep(run, 'verify');
       await mark();
@@ -385,14 +385,14 @@ async function runRoughcutPipeline(/** @type {any} */ project, /** @type {any} *
     await mark();
     if (await check()) throw new Error('cancelled');
 
-    /* 4. Continuity may apply safe structural edits; the previous document is kept for undo. */
-    if (!agentReady('continuity')) {
-      skipStep(run, 'continuity', '未启用连续性 Agent');
+    /* 4. Edit assembly may apply safe structural edits; the previous document is kept for undo. */
+    if (!agentReady('edit')) {
+      skipStep(run, 'continuity', '未启用剪辑装配 Agent');
     } else {
       beginStep(run, 'continuity');
       await mark();
       const before = readStoryboard(project);
-      const reply = await callAgent('continuity', [{
+      const reply = await callAgent('edit', [{
         role: 'user',
         content: `STORYBOARD:\n${JSON.stringify({ title: before.title, brief: before.brief, shots: before.shots.map((shot) => ({ id: shot.id, title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, targetMs: shot.targetMs, selectedId: shot.match.selectedId, confidence: shot.match.confidence })) })}.\n\nReturn only JSON: {"issues":["..."],"operations":[]}. Allowed operations: setTargetDuration {durationMs}, updateShot {shotId,patch}, reorderShots {shotIds}. Never touch a locked shot or invent media. Only propose changes that make the sequence more coherent.`,
       }], { project });
@@ -453,6 +453,9 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
   /** The key from either session cookie. */
   const cookieKey = (/** @type {Req} */ req) => (sameKey(cookie(req, COOKIE)) ? cookie(req, COOKIE) : cookie(req, FRAMED));
   key ??= advertise ? studioKey() : randomBytes(24).toString('hex');
+  /* A separate, session-only credential for the MCP endpoint. It cannot be used on any other
+     Studio API (notably render/export): an agent may learn this one, never the editor's key. */
+  const mcpKey = randomBytes(24).toString('hex');
   const watchers = createWatchers();
   /** the local semantic index: process, project/extra roots, model import (semantic-index.mjs) */
   const semanticIndex = new SemanticIndexService();
@@ -484,10 +487,16 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
 
   const sameKey = (/** @type {string | null | undefined} */ given) => typeof given === 'string' && given.length === key.length
     && timingSafeEqual(Buffer.from(given), Buffer.from(key));
+  const sameMcpKey = (/** @type {string | null | undefined} */ given) => typeof given === 'string' && given.length === mcpKey.length
+    && timingSafeEqual(Buffer.from(given), Buffer.from(mcpKey));
 
   /** The caller holds the key; a browser write must also come from the editor's own origin. */
   function authorize(/** @type {Req} */ req) {
     if (sameKey(/** @type {string | undefined} */ (req.headers['x-studio-key']))) return;
+    /* MCP clients use the standard Bearer header with the separate MCP key. It is accepted only on
+       this project MCP path, so a tool token cannot become a render/export token. */
+    const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+    if (/^\/api\/projects\/[^/]+\/mcp(?:\?|$)/.test(req.url ?? '') && sameMcpKey(bearer)) return;
     if (!sameKey(cookieKey(req))) throw new HttpError(401, 'open Studio from the address `openfilm open` prints');
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers.origin !== origin) throw new HttpError(403, 'not from Studio');
   }
@@ -1060,6 +1069,11 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     if (!existsSync(project.path) && !(!rest && req.method === 'DELETE')) {
       throw new HttpError(410, 'This project’s folder is not there any more: it was moved, renamed or deleted.', { code: 'missing' });
     }
+    /* ── the project's MCP endpoint: the controlled tools an ACP agent uses (mcp.mjs) ── */
+    if (rest === 'mcp') {
+      if (req.method !== 'POST') throw new HttpError(405, 'MCP uses POST');
+      return handleMcpRequest(req, res, { project, semanticIndex });
+    }
     /* ── the project's semantic index (semantic-index.mjs) ── */
     if (rest === 'index' && req.method === 'GET') return json(res, 200, await semanticIndex.status(project));
     if (rest === 'index/root' && req.method === 'PUT') {
@@ -1159,11 +1173,11 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     if (rest === 'storyboard/match' && req.method === 'POST') {
       const body = /** @type {{ shotIds?: unknown, topK?: unknown }} */ (await readJson(req) ?? {});
       const current = readStoryboard(project);
-      /* The query agent is optional: when configured it rewrites a shot into search words, and any
+      /* The material agent is optional: when configured it rewrites a shot into search words, and any
          failure falls back inside matchStoryboard to the shot's own visual intent. */
-      const planQuery = agentReady('query')
+      const planQuery = agentReady('material')
         ? async (/** @type {any} */ shot, /** @type {string} */ fallback) => {
-          const reply = await callAgent('query', [{
+          const reply = await callAgent('material', [{
             role: 'user',
             content: `SHOT:\n${JSON.stringify({ title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, must: shot.must, avoid: shot.avoid, targetMs: shot.targetMs })}\n\nReturn only JSON: {"queries":["Chinese visual search query"]}.`,
           }], { project });
@@ -1174,7 +1188,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
           return queries.length ? [...new Set([...queries, fallback])].join(' ').slice(0, 1200) : fallback;
         }
         : null;
-      const next = await matchStoryboard(current, project, semanticIndex, body, planQuery);
+      const next = await matchStoryboard(current, project, semanticIndex, { ...body, topK: body.topK ?? readPrefs().storyboard.candidateCount }, planQuery);
       return json(res, 200, { storyboard: await saveStoryboard(project, next, current.revision) });
     }
     if (rest === 'storyboard/fill' && req.method === 'POST') {
@@ -1221,13 +1235,47 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       current.updatedAt = Date.now();
       return json(res, 200, { storyboard: await saveStoryboard(project, current, current.revision), path: made.path });
     }
-    if (rest === 'storyboard/chat' && req.method === 'POST') {
-      const body = /** @type {{ text?: unknown, selectedIds?: unknown }} */ (await readJson(req) ?? {});
+    if (rest === 'agent/chat' && req.method === 'GET') {
+      const scope = url.searchParams.get('scope') === 'edit' ? /** @type {'edit'} */ ('edit') : /** @type {'storyboard'} */ ('storyboard');
+      return json(res, 200, { messages: await readAgentChat(project, scope) });
+    }
+    if (rest === 'agent/chat' && req.method === 'DELETE') {
+      const scope = url.searchParams.get('scope') === 'edit' ? /** @type {'edit'} */ ('edit') : /** @type {'storyboard'} */ ('storyboard');
+      await clearAgentChat(project, scope);
+      return json(res, 200, { messages: [] });
+    }
+    if (rest === 'agent/chat' && req.method === 'POST') {
+      const body = /** @type {{ text?: unknown, selectedIds?: unknown, selectedClipIds?: unknown, scope?: unknown }} */ (await readJson(req) ?? {});
       const instruction = typeof body.text === 'string' ? body.text.trim() : '';
       if (!instruction) throw new HttpError(400, 'instruction is required');
+      const scope = body.scope === 'edit' ? /** @type {'edit'} */ ('edit') : /** @type {'storyboard'} */ ('storyboard');
+      /* The conversation remembers prior turns per scope. The current message is recorded even
+         if the model fails, so switching stages never loses what the person typed. */
+      const history = await readAgentChat(project, scope);
+      await appendAgentChat(project, scope, { role: 'user', text: instruction });
+      const recordReply = async (/** @type {string} */ reply) => {
+        await appendAgentChat(project, scope, { role: 'agent', text: reply.slice(0, 20_000) });
+      };
+      /* One conversation agent, two contexts. The edit stage applies validated timeline operations
+         immediately; the storyboard stage returns operations for the existing undoable apply step. */
+      if (scope === 'edit') {
+        const film = await readProjectFilm(project.path);
+        const listing = await listFiles(project.path);
+        const selectedClipIds = Array.isArray(body.selectedClipIds) ? body.selectedClipIds.map(String).slice(0, 200) : [];
+        const turn = await conversationTurn(project, { text: instruction, scope, history, context: editContext(film, selectedClipIds, listing) });
+        const applied = await applyFilmOps(project, turn.filmOps);
+        await recordReply(turn.reply);
+        return json(res, 200, {
+          reply: turn.reply,
+          applied: Boolean(applied),
+          ...(applied ? { rev: applied.rev, timeline: applied.timeline } : {}),
+          ...(turn.intent ? { intent: turn.intent } : {}),
+          ...(turn.preview_request != null ? { preview_request: turn.preview_request } : {}),
+        });
+      }
       const current = readStoryboard(project);
       const selected = Array.isArray(body.selectedIds) ? body.selectedIds.map(String) : [];
-      /* Candidate descriptions are lazy, but a candidate sent to the director is being referenced:
+      /* Candidate descriptions are lazy, but a candidate sent to the conversation is being referenced:
          make its description now if it has none, then send it with the context. */
       const knownDescriptions = await descriptionsFor(project.id).catch(() => /** @type {Record<string, string>} */ ({}));
       /** @type {{ libraryId: string, path: string, name: string, kind: string, thumbUrl?: string }[]} */
@@ -1250,7 +1298,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
         }
       }
       for (const reference of referenced) {
-        if (knownDescriptions[reference.path] || !agentReady('verify')) continue;
+        if (knownDescriptions[reference.path] || !agentReady('qc')) continue;
         const desc = await ensureAssetDescription(project, reference, semanticIndex, { base: pages.folderUrl(project) }).catch(() => null);
         if (desc) knownDescriptions[reference.path] = desc;
       }
@@ -1259,6 +1307,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       const quick = localProposal(current, instruction);
       const deterministic = /(重复|雷同|去重|保持\s*开头|保留\s*开头|第?\s*\d+\s*(?:镜|个镜头)\s*(?:加长|延长|缩短))/.test(instruction);
       if (deterministic) {
+        await recordReply(quick.reply);
         return json(res, 200, {
           reply: quick.reply,
           operations: quick.operations,
@@ -1266,42 +1315,21 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
           ...(quick.intent ? { intent: quick.intent } : {}),
         });
       }
-      if (agentReady('director')) {
-        const context = {
-          title: current.title,
-          durationMs: current.brief.durationMs,
-          shots: current.shots.map((shot) => ({
-            id: shot.id,
-            index: shot.order + 1,
-            title: shot.title,
-            narration: shot.narration,
-            visualIntent: shot.visualIntent,
-            targetMs: shot.targetMs,
-            state: shot.match.state,
-            locked: shot.locked,
-            candidates: shot.match.candidates.slice(0, 6).map((candidate) => ({
-              id: candidate.id, name: candidate.name, score: candidate.score,
-              startMs: candidate.startMs, endMs: candidate.endMs,
-              ...(knownDescriptions[candidate.path] ? { desc: knownDescriptions[candidate.path] } : {}),
-            })),
-          })),
-          scenes: current.scenes.map((scene) => ({ id: scene.id, title: scene.title })),
-          selected,
-        };
-        const result = await callAgent('director', [
-          { role: 'user', content: `STORYBOARD:\n${JSON.stringify(context)}\n\nREQUEST:\n${instruction}\n\nYou may edit the storyboard directly; do not ask the person to confirm or choose timings. Return only JSON: {"reply":"short Chinese answer","operations":[],"intent":"edit|match|none"}. Every operation must have a type. Allowed operations:\n- setTargetDuration {durationMs}: scale the whole cut to this total\n- distributeDurations {durationMs?}: allocate varied, purposeful shot lengths by content (use when asked to decide lengths)\n- setShotDuration {shotId, targetMs}\n- updateShot {shotId, patch:{title?,narration?,visualIntent?,targetMs?,must?,avoid?,locked?}}\n- deleteShot {shotId}\n- duplicateShot {shotId}\n- reorderShots {shotIds}: every shot id once, in the new order\n- moveShot {shotId, index}\n- addShot {sceneId?, index?, shot:{title,narration,visualIntent,targetMs,must,avoid}}\n- addScene {title}\n- updateScene {sceneId, title}\n- setMatch {shotId, candidateId}: choose one of the listed candidates\n- clearMatch {shotId}\n- rematchShots {shotIds?}: mark them stale so the matcher searches again\n- lockShots {shotIds}\n- setBrief {brief:{durationMs?,aspect?,tone?,notes?}}\nNever touch a locked shot. Prefer operations over prose; when the request is clear, make a complete edit in one answer.` },
-        ], { project });
-        const parsed = parseJsonReply(result);
-        const operations = Array.isArray(parsed?.operations) ? parsed.operations : [];
-        applyOperations(current, operations); // validate before returning the edit
+      if (agentReady('conversation')) {
+        const context = storyboardContext(current, selected, knownDescriptions);
+        const turn = await conversationTurn(project, { text: instruction, scope: 'storyboard', history, context });
+        /* Validate before returning: the UI's apply step must never receive an edit that would fail. */
+        applyOperations(current, turn.operations);
+        await recordReply(turn.reply);
         return json(res, 200, {
-          reply: typeof parsed?.reply === 'string' ? parsed.reply : '已根据你的要求修改分镜。',
-          operations,
-          ...(parsed?.intent === 'match' || parsed?.intent === 'edit' || parsed?.intent === 'none' ? { intent: parsed.intent } : {}),
+          reply: turn.reply,
+          operations: turn.operations,
+          ...(turn.intent ? { intent: turn.intent } : {}),
           proposal: { id: `proposal_${Date.now().toString(36)}`, baseRevision: current.revision, source: 'ai' },
         });
       }
       const local = localProposal(current, instruction);
+      await recordReply(local.reply);
       return json(res, 200, {
         reply: local.reply,
         operations: local.operations,
@@ -1317,27 +1345,6 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       }
       const next = applyOperations(current, body.operations);
       return json(res, 200, { storyboard: await saveStoryboard(project, next, current.revision) });
-    }
-    if (rest === 'edit/chat' && req.method === 'POST') {
-      const body = /** @type {{ text?: unknown }} */ (await readJson(req) ?? {});
-      const instruction = typeof body.text === 'string' ? body.text.trim() : '';
-      if (!instruction) throw new HttpError(400, 'a message is required');
-      if (!agentReady('director')) throw new HttpError(409, '没有可用的导演 Agent，请先在设置中绑定模型。');
-      const { doc } = await readProjectFilm(project.path);
-      const clips = (doc?.tracks ?? []).flatMap((track, trackIndex) => (track.clips ?? []).map((clip) => ({
-        track: trackIndex + 1, src: clip.src, start: clip.time?.[0], end: clip.time?.[1],
-      }))).slice(0, 120);
-      const durationMs = Math.round(Math.max(0, ...clips.map((clip) => typeof clip.end === 'number' ? clip.end : 0)) * 1000);
-      const reply = await callAgent('director', [{
-        role: 'user',
-        content: `EDIT STAGE CONTEXT:\n${JSON.stringify({ title: project.name, durationMs, clips })}\n\nREQUEST:\n${instruction}\n\nAnswer as an editing assistant. Do not change files or emit storyboard operations. Return only JSON: {"reply":"short Chinese answer"}.`,
-      }], { project });
-      let text = reply;
-      try {
-        const parsed = parseJsonReply(reply);
-        if (typeof parsed?.reply === 'string' && parsed.reply.trim()) text = parsed.reply;
-      } catch { /* the model answered in prose */ }
-      return json(res, 200, { reply: text.slice(0, 20_000) });
     }
     if (rest === 'asset-descriptions') {
       if (req.method === 'GET') return json(res, 200, { descriptions: await descriptionsFor(project.id) });
@@ -1864,6 +1871,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     filmOrigin: pages.origin,
     port: address.port,
     key,
+    mcpKey,
     close() { return closing ??= shutDown(); },
   };
   async function shutDown() {

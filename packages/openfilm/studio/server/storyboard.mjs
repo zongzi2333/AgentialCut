@@ -144,7 +144,7 @@ function normalizeMatch(/** @type {unknown} */ value) {
     state,
     candidates,
     selectedId: selected?.id ?? null,
-    confidence: selected ? Math.round(within(selected.review?.confidence ?? selected.score) * 100) : 0,
+    confidence: selected ? Math.round(within(selected.score) * 100) : 0,
     query: clean(raw.query, 500),
     ...(raw.stale ? { stale: true } : {}),
     ...(raw.error ? { error: clean(raw.error, 500) } : {}),
@@ -542,7 +542,17 @@ export async function matchStoryboard(doc, project, semanticIndex, options = {},
   const shots = doc.shots.filter((shot) => !shot.locked && (!wanted.size || wanted.has(shot.id)));
   if (!shots.length) return doc;
   const topK = integer(options.topK, 10, 3, 30);
+  /* A material already adopted by another shot is not a first choice for this one. The same source
+     may still be used when it is the only candidate, but adjacent shots no longer default to the
+     same clip. The match score remains the semantic score; this is only selection order. */
+  const usedPaths = new Set();
+  for (const shot of doc.shots) {
+    const chosen = shot.match.candidates.find((candidate) => candidate.id === shot.match.selectedId);
+    if (chosen?.path) usedPaths.add(chosen.path);
+  }
   for (const shot of shots) {
+    const own = shot.match.candidates.find((candidate) => candidate.id === shot.match.selectedId);
+    if (own?.path) usedPaths.delete(own.path);
     const fallback = [...new Set([shot.visualIntent, shot.narration, ...shot.must].map((part) => part.trim()).filter(Boolean))].join(' ').slice(0, 1200) || shot.title;
     let query = fallback;
     if (planQuery) query = (await planQuery(shot, fallback).catch(() => fallback)) || fallback;
@@ -575,12 +585,13 @@ export async function matchStoryboard(doc, project, semanticIndex, options = {},
         modelId: hit.modelId,
         origin: 'library',
       }, index)).filter(Boolean);
-      const selected = candidates[0] ?? null;
+      const selected = candidates.find((candidate) => candidate && !usedPaths.has(candidate.path)) ?? candidates[0] ?? null;
+      if (selected?.path) usedPaths.add(selected.path);
       shot.match = {
         state: selected ? (selected.score < REVIEW_SCORE ? 'review' : 'matched') : 'gap',
         candidates: /** @type {StoryboardCandidate[]} */ (candidates),
         selectedId: selected?.id ?? null,
-        confidence: selected ? Math.round(within(selected.review?.confidence ?? selected.score) * 100) : 0,
+        confidence: selected ? Math.round(within(selected.score) * 100) : 0,
         query,
       };
     } catch (error) {
@@ -626,7 +637,7 @@ export function handoffClips(/** @type {Storyboard} */ doc) {
   return { clips, gaps };
 }
 
-/** A deterministic first draft for the director conversation when no model is configured. */
+/** A deterministic first draft for the conversation when no model is configured. */
 export function localProposal(/** @type {Storyboard} */ doc, /** @type {string} */ instruction) {
   const text = instruction.trim();
   const duration = /(?:压到|压缩到|缩短到|目标|总时长)\s*(\d+(?:\.\d+)?)\s*(?:秒|s)/i.exec(text);

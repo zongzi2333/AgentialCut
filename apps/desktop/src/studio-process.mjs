@@ -4,7 +4,7 @@
  * agent's `openfilm open` finds it and shows its project in the app's window, not in a browser.
  *
  * Talks to the main process over `process.parentPort`:
- *   → { type: 'ready', origin, filmOrigin, key }   listening
+ *   → { type: 'ready', origin, filmOrigin, key, mcpKey }   listening
  *   → { type: 'failed', code, message }              could not start (code 'EADDRINUSE': the port is taken)
  *   → { type: 'browser', state: 'downloading' | 'ready' | 'failed', message? }   the headless browser pages draw in
  *   → { type: 'ffmpeg', found }                      whether ffmpeg and ffprobe are on the PATH (video pictures, sound, export)
@@ -48,7 +48,7 @@ try {
     /* the window's page, Studio's editor with the chat beside it (shell/), in place of the editor alone */
     ...(process.env.OPENFILM_EDITOR_DIR ? { editorDir: process.env.OPENFILM_EDITOR_DIR } : {}),
   });
-  send({ type: 'ready', origin: studio.origin, filmOrigin: studio.filmOrigin, key: studio.key });
+  send({ type: 'ready', origin: studio.origin, filmOrigin: studio.filmOrigin, key: studio.key, mcpKey: studio.mcpKey });
 } catch (e) {
   send({ type: 'failed', code: e?.code ?? null, message: e?.message ?? String(e) });
   process.exit(1);

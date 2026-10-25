@@ -1,8 +1,8 @@
 /**
- * Settings → Agents: agent cards, each with the same fields. A card may own one work slot (storyboard,
- * director, query planning, visual review, continuity/assembly) or take no slot. Selecting a card
- * expands it; prompt, model, sampling, tools and mounted skills are edited in place. Defaults are
- * ordinary cards: they can be paused, edited or deleted.
+ * Settings → Agents: agent cards, each with the same fields. A card may own one work slot
+ * (storyboard, material, edit, qc, conversation) or take no slot. Selecting a card expands it;
+ * prompt, model, sampling, tools and mounted skills are edited in place. Defaults are ordinary
+ * cards: they can be paused, edited or deleted.
  *
  * The skill pool below the cards is the same Skills/ system the Skills gallery uses. Adding or removing
  * a skill there touches real files; dragging one onto a card only mounts it for that agent.
@@ -18,7 +18,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { useAutoSave } from '@/lib/use-auto-save';
 import { useDismissExpanded } from './use-dismiss-expanded';
 
-const EMPTY_AGENTS: AgentCardsResponse['state'] = { revision: 0, agents: [] };
+const EMPTY_AGENTS: AgentCardsResponse['state'] = { revision: 0, promptVersion: 0, agents: [] };
 
 export function AgentCardsSection({ embedded = false, projectId = null }: { embedded?: boolean; projectId?: string | null }) {
   const [agents, setAgents] = React.useState<AgentCardsResponse | null>(null);
@@ -125,7 +125,7 @@ export function AgentCardsSection({ embedded = false, projectId = null }: { embe
   });
   const roles = agents?.roles ?? [];
   const roleLabel = (id: string) => roles.find((role) => role.id === id)?.label ?? '不参与流程';
-  const categoriesFor = (role: AgentCard['role']) => role === 'verify' ? ['vl'] as const : ['llm'] as const;
+  const categoriesFor = (role: AgentCard['role']) => role === 'qc' ? ['vl'] as const : ['llm'] as const;
   const modelCardsFor = (role: AgentCard['role']) => (providers?.cards ?? []).filter((card) => card.enabled && (categoriesFor(role) as readonly string[]).includes(card.category));
   const installedSkills = skills.filter((skill) => !skill.off);
   const pool = installedSkills.filter((skill) => {
@@ -255,5 +255,5 @@ export function AgentCardsSection({ embedded = false, projectId = null }: { embe
         }} />
     </>
   );
-  return embedded ? body : <SettingsPage note="五张默认智能体只是普通的智能体卡片；提示词、模型、采样参数和技能都可修改，也可以删除或添加自定义智能体。">{body}</SettingsPage>;
+  return embedded ? body : <SettingsPage note="默认智能体只是普通的智能体卡片；提示词、模型、采样参数和技能都可修改，也可以删除或添加自定义智能体。">{body}</SettingsPage>;
 }

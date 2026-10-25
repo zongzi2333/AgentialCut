@@ -135,9 +135,10 @@ export function agentProblem(entry, step, e, turnId = null) {
  * in (agent-skills.mjs).
  * @param {{ trusted: (event: any) => boolean, binDir?: string | null, fallbackDir?: string | null, env?: Record<string, string>,
  *           harness?: (id: string) => Promise<any>, onWorking?: (folders: string[]) => void, onAsking?: (folders: string[]) => void, logDir?: () => string | null,
+ *           mcp?: (cwd: string) => Promise<Array<any> | null> | Array<any> | null,
  *           skills?: { dataDir: string, mine: string } | null }} opts
  */
-export function registerLocalAgentIpc(ipcMain, { trusted, binDir = null, fallbackDir = null, env = {}, harness = async () => null, log = () => {}, onWorking = () => {}, onAsking = () => {}, logDir = () => null, skills = null }) {
+export function registerLocalAgentIpc(ipcMain, { trusted, binDir = null, fallbackDir = null, env = {}, harness = async () => null, log = () => {}, onWorking = () => {}, onAsking = () => {}, logDir = () => null, mcp = null, skills = null }) {
   const harnessFor = async (agent) => (HARNESS_AGENTS.includes(agent) ? harness(agent) : undefined);
   const skillRecord = skills ? skillStore(skills.dataDir) : null;
   /* what went wrong, kept in Studio's home with Studio's own problems (openfilm's problems.mjs), for its report */
@@ -145,7 +146,7 @@ export function registerLocalAgentIpc(ipcMain, { trusted, binDir = null, fallbac
   const noteProblem = (entry, step, e, turnId = null) => recordProblem(agentProblem(entry, step, e, turnId), { file: problems });
   /** a session's skills and MCP servers: OpenFilm's, and of the person's own those let in (agent-skills.mjs) */
   const skillsFor = (agent) => (skills && skillRecord ? { ...skills, allowed: skillRecord.allowed(agent), mcpAllowed: skillRecord.mcpAllowed(agent) } : null);
-  /** @type {Map<string, { session: AgentSession, sender: import('electron').WebContents, pending: Map<string, (answer: any) => void>, agent: string, cwd: string, turn: any }>} */
+  /** @type {Map<string, { session: AgentSession, sender: import('electron').WebContents, pending: Map<string, (answer: any) => void>, agent: string, cwd: string, turn: any, mcp?: any[] }>} */
   const sessions = new Map();
   let activePrompts = 0;
   /** the folders a turn is running in now: what a project cannot be deleted from under */
@@ -237,12 +238,19 @@ export function registerLocalAgentIpc(ipcMain, { trusted, binDir = null, fallbac
     const open = resume ? [...sessions].find(([, e]) => e.agent === agent && e.cwd === cwd && e.info?.sessionId === resume && e.sender === event.sender) : null;
     if (open) {
       open[1].lastUsed = Date.now();
-      return { ok: true, key: open[0], info: { ...open[1].info, resumed: true, authMethods: [], mcp: false } };
+      return { ok: true, key: open[0], info: { ...open[1].info, resumed: true, authMethods: [], mcp: Array.isArray(open[1].mcp) && open[1].mcp.length > 0 } };
     }
     const key = randomUUID();
     const pending = new Map();
-    const entry = { sender: event.sender, pending, session: null, agent, cwd, turn: null, lastUsed: Date.now() };
+    const entry = { sender: event.sender, pending, session: null, agent, cwd, turn: null, lastUsed: Date.now(), mcp: [] };
     try {
+      /* The project-scoped OpenFilm MCP server. A failure here is logged but does not hide the
+         agent: the chat can still explain the problem, and a later session retries. */
+      const mcpServers = mcp ? await Promise.resolve(mcp(cwd)).catch((error) => {
+        log(`MCP for ${cwd}: ${error instanceof Error ? error.message : String(error)}\n`);
+        return [];
+      }) : [];
+      entry.mcp = Array.isArray(mcpServers) ? mcpServers.filter(Boolean) : [];
       entry.session = new AgentSession({
         agent,
         cwd,
@@ -250,6 +258,7 @@ export function registerLocalAgentIpc(ipcMain, { trusted, binDir = null, fallbac
         binDir,
         fallbackDir,
         env,
+        mcpServers: entry.mcp,
         logDir: logDir(),
         skills: skillsFor(agent),
         harness: await harnessFor(agent),
@@ -282,7 +291,7 @@ export function registerLocalAgentIpc(ipcMain, { trusted, binDir = null, fallbac
       event.sender.once('destroyed', () => close(key));
       const info = await entry.session.start();
       entry.info = info;
-      return { ok: true, key, info: { ...info, authMethods: [], mcp: false } };
+      return { ok: true, key, info: { ...info, authMethods: [], mcp: entry.mcp.length > 0 } };
     } catch (e) {
       const result = { ok: false, error: e instanceof Error ? e.message : String(e), ...(e?.code ? { code: String(e.code) } : {}) };
       if (meta?.turnId) {
