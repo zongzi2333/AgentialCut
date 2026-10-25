@@ -92,7 +92,7 @@ function MarkerCard({ placed, x, y, focusName, actions, onClose }: {
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
-      onContextMenu={(e) => e.stopPropagation()}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onKeyDown={(e) => {
         /* the card's keys are its own: not the timeline's (Delete there deletes clips) */
         e.stopPropagation();

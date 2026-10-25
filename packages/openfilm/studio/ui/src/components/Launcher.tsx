@@ -1,8 +1,7 @@
 /**
- * The window of an app with tabs (lib/host.ts `tabs`) when no tab is open: an empty window (its top bar still drags
- * it) and the projects window over it, as `+` opens it, only with nothing behind to close it to. The project picked
- * opens in its tab. Shown while tabs are open too (a tab's page that could not load), its top bar has them, so they
- * can always be reached.
+ * The window of an app with tabs (lib/host.ts `tabs`) when no tab is open: the project library as the page, with the
+ * app's top bar above it (its logo, its tabs when there are any). The project picked opens in its tab. Shown while tabs
+ * are open too (a tab's page that could not load), its top bar has them, so they can always be reached.
  */
 import React from 'react';
 import { BrandLogo } from './BrandLogo';
@@ -31,7 +30,9 @@ export function Launcher({ onOpen, onSettings }: { onOpen: (projectId: string) =
         </Tooltip>
         {tabs.length ? <TabStrip /> : null}
       </div>
-      <ProjectsPopover open currentProjectId="" onOpen={onOpen} onCurrentRemoved={() => {}} />
+      <div className="flex min-h-0 flex-1 p-[6px]">
+        <ProjectsPopover embedded open currentProjectId="" onOpen={onOpen} onCurrentRemoved={() => {}} />
+      </div>
     </div>
   );
 }

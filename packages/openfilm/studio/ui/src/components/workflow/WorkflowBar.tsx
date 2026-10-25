@@ -1,8 +1,8 @@
 /**
- * The film's six steps, across the top of a project: project, media, storyboard and rough cut, edit, sound, deliver.
+ * The film's six steps, across the top of a project: project, media, storyboard and rough cut, sound, edit, deliver.
  *
  * It is a way through the work, not a set of tabs: each step is a place with its own surface (the project's facts, the
- * media library, the AI draft, the editor, the sound tools, the export center), and a person moves forward and back
+ * media library, the AI draft, the sound tools, the editor, the export center), and a person moves forward and back
  * freely. The order is the order a film is made in, so the first screen of a new project already says what comes next.
  *
  * Editing is the step that was here before; the others reuse what Studio already had (the media pane, the export
@@ -22,8 +22,8 @@ const STEPS: readonly { id: WorkflowStage; icon: typeof FolderKanban }[] = [
   { id: 'project', icon: FolderKanban },
   { id: 'media', icon: LibraryBig },
   { id: 'roughcut', icon: WandSparkles },
-  { id: 'edit', icon: Scissors },
   { id: 'sound', icon: AudioLines },
+  { id: 'edit', icon: Scissors },
   { id: 'deliver', icon: PackageCheck },
 ];
 

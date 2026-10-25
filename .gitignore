@@ -20,4 +20,3 @@ dist/
 # OS and editors
 .DS_Store
 *.log
-.TEMP/

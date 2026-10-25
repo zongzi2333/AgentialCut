@@ -15,6 +15,7 @@ import { ProjectView } from './components/ProjectView';
 import { BrandLoadingScreen } from './components/BrandLoadingScreen';
 import { ProjectsPopover } from './components/ProjectsLibrary';
 import { Launcher } from './components/Launcher';
+import { ContextMenu, TEXT_FIELD, type ContextMenuEntry } from './components/ContextMenu';
 import { studioHost } from './lib/host';
 import { WhatsNew } from './components/WhatsNew';
 import { SettingsModal, type SettingsSection } from './components/settings/SettingsModal';
@@ -44,9 +45,10 @@ const settingsIn = (path: string): SettingsSection | null => {
 const tabs = studioHost?.tabs ?? null;
 
 export function App() {
+  const t = useT();
   const [path, setPath] = useState(location.pathname);
   const [returnTo, setReturnTo] = useState('/');
-  const [returnProjects, setReturnProjects] = useState(false);
+  const [context, setContext] = useState<{ x: number; y: number; target: HTMLElement | null } | null>(null);
   const settingsPushed = useRef(false);
   const returnHome = useRef(false);
   const [none, setNone] = useState(false);
@@ -69,6 +71,21 @@ export function App() {
     return () => { window.removeEventListener('popstate', onPop); stop(); };
   }, []);
 
+  /* the browser's own menu never opens: a page that draws its own menu prevents the event first; on empty space
+     (or a text field) this one answers, so a right-click always has a surface */
+  useEffect(() => {
+    const onContext = (event: MouseEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[role="menu"]')) { event.preventDefault(); return; }
+      event.preventDefault();
+      setContext({ x: event.clientX, y: event.clientY, target });
+    };
+    window.addEventListener('contextmenu', onContext);
+    return () => window.removeEventListener('contextmenu', onContext);
+  }, []);
+  useEffect(() => { setContext(null); }, [path]);
+
   /** Show a project: here, or (with tabs) in its own tab. */
   const open = (projectId: string) => { if (tabs) tabs.open(projectId); else go(`/projects/${projectId}`); };
   /** The project shown was deleted: its tab closes (with tabs), or back to the last project. */
@@ -77,10 +94,9 @@ export function App() {
   const id = projectIn(path);
   useEffect(() => { if (id) { setNone(false); returnHome.current = false; } }, [id]);
   const settingsSection = settingsIn(path);
-  const openSettings = (section: SettingsSection = 'general', options?: { projects?: boolean }) => {
+  const openSettings = (section: SettingsSection = 'general') => {
     if (!settingsIn(location.pathname)) {
       setReturnTo(location.pathname || '/');
-      setReturnProjects(Boolean(options?.projects));
       returnHome.current = !projectIn(location.pathname);
       settingsPushed.current = true;
     }
@@ -105,11 +121,6 @@ export function App() {
     }
     go(returnTo || '/');
   };
-  /* Once the project page is back, the Projects window it opens is its own again: clear the request after its first
-     render, so a later visit to the same project does not reopen it. */
-  useEffect(() => {
-    if (!settingsSection && returnProjects) setReturnProjects(false);
-  }, [settingsSection, returnProjects]);
   /* no project in the address: the one opened last that is still there, else the Projects window (`none`); with
      tabs, the projects (no tab is open) */
   useEffect(() => {
@@ -126,18 +137,62 @@ export function App() {
   }, [id, settingsSection, none]);
 
   const settingsProject = projectIn(returnTo);
+  /* The fallback menu: text fields keep their editing actions; everywhere else the page's own menu runs first (it
+     prevents the event), and this one offers the app's always-useful entries. */
+  const contextItems: ContextMenuEntry[] = [];
+  if (context) {
+    const field = context.target?.closest(TEXT_FIELD) as HTMLElement | null;
+    if (field) {
+      const value = field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement ? field : null;
+      contextItems.push(
+        { id: 'copy', label: t('contextMenu.copy'), shortcut: 'Ctrl+C', onSelect: () => { field.focus(); document.execCommand('copy'); } },
+        { id: 'cut', label: t('contextMenu.cut'), shortcut: 'Ctrl+X', disabled: Boolean(value?.readOnly || value?.disabled), onSelect: () => { field.focus(); document.execCommand('cut'); } },
+        {
+          id: 'paste', label: t('contextMenu.paste'), shortcut: 'Ctrl+V', disabled: Boolean(value?.readOnly || value?.disabled),
+          onSelect: () => {
+            void navigator.clipboard?.readText().then((text) => {
+              field.focus();
+              if (value) {
+                const at = value.selectionStart ?? value.value.length;
+                const end = value.selectionEnd ?? at;
+                value.setRangeText(text, at, end, 'end');
+                value.dispatchEvent(new Event('input', { bubbles: true }));
+              } else {
+                document.execCommand('insertText', false, text);
+              }
+            }, () => { /* the browser refused the clipboard: the keyboard still pastes */ });
+          },
+        },
+        {
+          id: 'select-all', label: t('contextMenu.selectAll'), shortcut: 'Ctrl+A',
+          onSelect: () => { field.focus(); if (value) value.select(); else document.execCommand('selectAll'); },
+        },
+        { id: 'edit-sep', separator: true },
+      );
+    }
+    contextItems.push(
+      { id: 'settings', label: t('contextMenu.settings'), onSelect: () => openSettings('general') },
+      { id: 'shortcuts', label: t('contextMenu.shortcuts'), onSelect: () => openSettings('shortcuts') },
+      { id: 'sep-app', separator: true },
+      { id: 'copy-address', label: t('contextMenu.copyAddress'), onSelect: () => { void navigator.clipboard?.writeText(location.href); } },
+      { id: 'reload', label: t('contextMenu.reload'), onSelect: () => location.reload() },
+    );
+    if (settingsSection) contextItems.push({ id: 'close-settings', label: t('contextMenu.closeSettings'), onSelect: closeSettings });
+  }
   const page = settingsSection ? (
     <SettingsModal open section={settingsSection} projectId={settingsProject}
       onSection={(next) => go(`/settings/${next}`, true)} onClose={closeSettings} />
-  ) : id ? <ProjectView key={id} projectId={id} onProject={open} onLeave={leave} onSettings={openSettings} initialProjectsOpen={!settingsSection && returnProjects} />
+  ) : id ? <ProjectView key={id} projectId={id} onProject={open} onLeave={leave} onSettings={openSettings} />
     : tabs ? <Launcher onOpen={open} onSettings={openSettings} />
     : !none ? <BrandLoadingScreen labelKey="projects.opening" />
       : (
-        <div className="workspace-shell bg-[var(--dock-shell)]">
-          <ProjectsPopover open currentProjectId="" onOpen={(next) => go(`/projects/${next}`)} onCurrentRemoved={() => {}} />
+        <div className="workspace-shell flex flex-col bg-[var(--dock-shell)]">
+          <div className="flex min-h-0 flex-1 p-[6px]">
+            <ProjectsPopover embedded open currentProjectId="" onOpen={(next) => go(`/projects/${next}`)} onCurrentRemoved={() => {}} />
+          </div>
         </div>
       );
-  return <>{page}<ConnectionNotice /><WhatsNew /></>;
+  return <>{page}<ConnectionNotice /><WhatsNew />{context ? <ContextMenu x={context.x} y={context.y} items={contextItems} onClose={() => setContext(null)} /> : null}</>;
 }
 
 /**

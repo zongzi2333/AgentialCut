@@ -67,6 +67,7 @@ import { agentReady, callAgent, parseJsonReply, storyboardSchemaHint, testConnec
 import { readProviderState, redactState, saveProviderState, CATALOG, CATEGORIES, cardConnection, syncLegacyRuntime } from './provider-cards.mjs';
 import { readAgentState, saveAgentState, AGENT_ROLES, defaultPrompts } from './agent-cards.mjs';
 import { applyFilmOps, conversationTurn, editContext, storyboardContext } from './agent-flow.mjs';
+import { audioRoutes } from './audio.mjs';
 import { appendAgentChat, clearAgentChat, readAgentChat } from './agent-chat.mjs';
 import { handleMcpRequest } from './mcp.mjs';
 import { PIPELINE_STEPS, beginStep, clearUndo, emptyRun, failStep, finishStep, isCancelled, readRun, readUndo, skipStep, step, writeRun, writeUndo } from './pipeline.mjs';
@@ -1372,6 +1373,11 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       current.roughcut = { createdAt: Date.now(), durationMs: clips.reduce((sum, clip) => sum + clip.durationMs, 0), clips, gaps };
       return json(res, 200, { storyboard: await saveStoryboard(project, current, current.revision), clips, gaps });
     }
+    /* ── the sound stage: current audio, local/network sources, TTS/music/SFX, native timeline edits (audio.mjs) ── */
+    if (await audioRoutes(req, res, project, rest, {
+      folderUrl: pages.folderUrl(project),
+      emit: (event) => watchers.emit(project.path, /** @type {any} */ (event)),
+    })) return;
     /* ── subtitles: the film's lines, the person's subtitle style, translation (see captions.mjs) ── */
     if (await captionRoutes(req, res, project.path, rest, { translate: subtitleTranslator, transcribe: await subtitleTranscriber() })) return;
     /* ── end subtitles ── */

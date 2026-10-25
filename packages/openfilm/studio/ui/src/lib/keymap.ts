@@ -79,12 +79,19 @@ export const ACTIONS = [
   { id: 'paste-attrs', tab: 'basic', keys: ['mod+shift+v'] },
   /* the rest */
   { id: 'refer', tab: 'other', keys: ['mod+l'] },
+  /* the sound step's own: no keys by default, bound in Settings */
+  { id: 'audio-mute-track', tab: 'other', keys: [] },
+  { id: 'audio-volume-up', tab: 'other', keys: [] },
+  { id: 'audio-volume-down', tab: 'other', keys: [] },
+  { id: 'audio-normalize', tab: 'other', keys: [] },
+  { id: 'audio-fade-in', tab: 'other', keys: [] },
+  { id: 'audio-fade-out', tab: 'other', keys: [] },
   /* the workflow's six steps: no default keys (Tab is the focus key, not a modifier); set them in Settings */
   { id: 'stage-project', tab: 'other', keys: [] },
   { id: 'stage-media', tab: 'other', keys: [] },
   { id: 'stage-roughcut', tab: 'other', keys: [] },
-  { id: 'stage-edit', tab: 'other', keys: [] },
   { id: 'stage-sound', tab: 'other', keys: [] },
+  { id: 'stage-edit', tab: 'other', keys: [] },
   { id: 'stage-deliver', tab: 'other', keys: [] },
 ] as const satisfies readonly { id: string; tab: KeyTab; keys: readonly string[] }[];
 

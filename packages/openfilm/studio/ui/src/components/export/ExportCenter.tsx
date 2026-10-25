@@ -1,21 +1,20 @@
 /**
- * The export center: the project menu's "Export".
+ * The export center: the deliver step's own screen.
  *
  * Organized by where the film is going, not by format: a platform, an editor, a GIF, the sound, stills. Each
  * destination has its own few settings and a one-line summary of what comes out, and one primary button says what
  * happens.
  *
- * Everything renders on this machine, in Studio's server (see lib/export-jobs): the dialog closes as soon as the
- * exports are queued, and the export tray follows them.
+ * Everything renders on this machine, in Studio's server (see lib/export-jobs): the queued exports go to the export
+ * tray that follows them.
  *
  * What was chosen last time for each destination is kept in this browser (localStorage) and comes back next time.
  */
 import {
   AlertTriangle, AudioLines, Captions, Check, Clapperboard, Download, Film, FolderArchive, FolderOpen, Images, Layers, Loader2, MonitorPlay, Presentation,
-  Sparkles, X,
+  Sparkles,
 } from 'lucide-react';
 import React from 'react';
-import { createPortal } from 'react-dom';
 
 import { useLanguage, useT } from '@/i18n';
 import { studioHost } from '@/lib/host';
@@ -204,8 +203,6 @@ function codecAvailable(codec: ExportVideoCodec, can: ExportCapabilities | null)
 }
 
 export interface ExportCenterProps {
-  open: boolean;
-  onClose: () => void;
   projectId: string;
   title: string;
   /** The film's length. */
@@ -239,7 +236,6 @@ export interface ExportCenterProps {
 const RENDERS: ReadonlySet<Dest> = new Set(['social', 'video', 'alpha', 'gif', 'audio', 'images', 'slides']);
 
 export function ExportCenter(props: ExportCenterProps) {
-  const { open, onClose } = props;
   const t = useT();
   const language = useLanguage();
   /** the platforms offered in this language (a platform picked in another and not offered here is not exported) */
@@ -267,7 +263,6 @@ export function ExportCenter(props: ExportCenterProps) {
   const [nameTyped, setNameTyped] = React.useState(false);
 
   React.useEffect(() => {
-    if (!open) return;
     const loaded = loadSettings(language);
     setS(props.focusClipId
       ? { ...loaded, dest: 'alpha', alpha: { ...loaded.alpha, source: props.focusClipId } }
@@ -282,18 +277,11 @@ export function ExportCenter(props: ExportCenterProps) {
     setRange((r) => ({ ...r, on: false }));
     void listExports(props.projectId).then((r) => { setCan(r.can); setDraftApps({ jianying: Boolean(r.drafts?.jianying), capcut: Boolean(r.drafts?.capcut) }); setDefaultFolder(r.folder); setCaptionCount(r.subtitles ?? 0); setProjectSizes(r.project ?? null); }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [props.focusClipId]);
 
   React.useEffect(() => {
     if (hydrated) saveSettings(s);
   }, [s, hydrated]);
-
-  React.useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !working) onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose, working]);
 
   const stage = props.stage;
   const totalMs = props.durationMs;
@@ -314,14 +302,14 @@ export function ExportCenter(props: ExportCenterProps) {
   );
   React.useEffect(() => {
     setNleSourceFps(null);
-    if (!open || !footageSrc) return undefined;
+    if (!footageSrc) return undefined;
     let live = true;
     void probeFps(props.projectId, footageSrc).then((fps) => {
       if (!live || fps == null) return;
       setNleSourceFps(NLE_FPS.find((f) => Math.abs(f - fps) < 0.05) ?? null);
     }).catch(() => {});
     return () => { live = false; };
-  }, [open, footageSrc, props.projectId]);
+  }, [footageSrc, props.projectId]);
 
   /* where a part can start and end: the picture clips' edges, each named by its clips (rangeMarks) */
   const boundaries = React.useMemo(() => rangeMarks(film?.scenes ?? [], totalMs), [film, totalMs]);
@@ -518,7 +506,7 @@ export function ExportCenter(props: ExportCenterProps) {
       const named = typed ? jobs.map((job) => ({ ...job, name: typed })) : jobs;
       const queued = await startExports(props.projectId, named, s.folder || undefined);
       props.onQueued?.(queued);
-      onClose();
+      setResult({ ok: true, text: t('exportCenter.queuedNotice') });
     } catch (e) {
       setResult({ ok: false, text: e instanceof TypeError ? t('exportCenter.engineDown') : (e instanceof Error ? e.message : String(e)) });
     } finally {
@@ -561,26 +549,17 @@ export function ExportCenter(props: ExportCenterProps) {
     }
   };
 
-  if (!open || typeof document === 'undefined') return null;
+  if (typeof document === 'undefined') return null;
 
   const primaryLabel = working
     ?? (fileCount > 1 ? t('exportCenter.exportN').replace('{n}', String(fileCount)) : t('exportCenter.export'));
   const disabled = Boolean(working) || Boolean(emptyReason) || !folder;
 
-  return createPortal(
-    <div
-      /* a plain dim, no backdrop blur: a blur over the whole window is drawn again on every frame of a wheel scroll in
-         the dialog, and the window flickered on macOS */
-      className="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 p-4"
-      onClick={() => { if (!working) onClose(); }}
-    >
+  return (
       <div
-        role="dialog"
-        aria-modal="true"
+        role="region"
         aria-label={t('exportCenter.title')}
-        className="flex h-[min(640px,calc(100vh-32px))] w-full max-w-[880px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-lg)]"
-        style={{ animation: 'openfilm-rise 0.16s ease-out both' }}
-        onClick={(e) => e.stopPropagation()}
+        className="flex h-full min-h-0 w-full overflow-hidden bg-[var(--dock-pane)]"
       >
         {/* left: destinations */}
         {/* the list scrolls when the window is short; the note under it stays whole */}
@@ -622,15 +601,6 @@ export function ExportCenter(props: ExportCenterProps) {
               <h3 className="text-[14px] font-semibold text-[var(--text)]">{t(`exportCenter.dest.${dest}`)}</h3>
               <p className="mt-0.5 text-[12px] leading-relaxed text-[var(--text-muted)]">{tApp(`exportCenter.destDesc.${dest}`)}</p>
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={Boolean(working)}
-              aria-label={t('exportDialog.close')}
-              className="self-start rounded-lg p-1 text-[var(--text-faint)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)]"
-            >
-              <X size={16} />
-            </button>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-4 pt-3">
@@ -1229,8 +1199,6 @@ export function ExportCenter(props: ExportCenterProps) {
           </div>
         </div>
       </div>
-    </div>,
-    document.body,
   );
 }
 

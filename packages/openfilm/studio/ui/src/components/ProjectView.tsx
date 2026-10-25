@@ -86,7 +86,6 @@ import { ApiLogWindow } from './ApiLogWindow';
 import { EditChatPanel } from './ai/EditChatPanel';
 import { ProjectHistoryButton, ProjectHistoryControls } from './ProjectHistoryControls';
 import { useProjectHistory } from './use-project-history';
-import { ProjectsPopover } from './ProjectsLibrary';
 import { FilmFullscreenBar, useFullscreenKeys } from './FilmFullscreenBar';
 import { ViewerBar } from './ViewerBar';
 import { LiveTime, type PlaybackClock } from './LiveTime';
@@ -211,24 +210,21 @@ function clipIdAt(film: Film | null, loc: string): string | null {
 /** No subtitles shown (fullscreen's CC off): the same list each time, so nothing renders again for it. */
 const NO_CUES: readonly SubtitleCue[] = [];
 
-export function ProjectView({ projectId, onProject, onLeave, onSettings, initialProjectsOpen = false }: {
+export function ProjectView({ projectId, onProject, onLeave, onSettings }: {
   projectId: string;
   /** go to another project */
   onProject: (id: string) => void;
   /** this project was taken off the list (or is gone): leave it */
   onLeave: () => void;
-  /** open the settings page on a section; `projects` keeps the Projects window open behind it */
-  onSettings: (section?: SettingsSection, options?: { projects?: boolean }) => void;
-  /** opened from the Projects window: show it again when Settings closes */
-  initialProjectsOpen?: boolean;
+  /** open the settings page on a section */
+  onSettings: (section?: SettingsSection) => void;
 }) {
   const t = useT();
   const toast = useToast();
   const keyHint = useKeyHint();
   const settingsRef = React.useRef(onSettings);
   settingsRef.current = onSettings;
-  const projectsOpenRef = React.useRef(false);
-  React.useEffect(() => studioHost?.settings?.onOpen(() => settingsRef.current('general', { projects: projectsOpenRef.current })), []);
+  React.useEffect(() => studioHost?.settings?.onOpen(() => settingsRef.current('general')), []);
   /* the latest onLeave, for the folder's events (subscribed once per project) */
   const leaveRef = React.useRef(onLeave);
   leaveRef.current = onLeave;
@@ -625,8 +621,6 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
   }, [film.film, info, mediaFacts, pendingDrops, previewError]);
   const tracksRef = React.useRef(timelineTracks);
   tracksRef.current = timelineTracks;
-  /** The sound step's own count: the rows of the timeline that carry sound. */
-  const soundTrackCount = React.useMemo(() => timelineTracks.filter((track) => track.kind === 'audio').length, [timelineTracks]);
   /* the clips' links (`data-link`, by clip id): clips sharing one are edited together (lib/timeline-edit) */
   const clipLinks = React.useMemo(() => new Map((film.film?.tracks ?? []).flatMap((tr) => tr.clips.flatMap((c) => (
     c.attrs?.['data-link'] ? [[c.id, c.attrs['data-link']] as const] : []
@@ -643,6 +637,15 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
      (a clip that lost its length still counted at its old one), and the timeline's own reading of film.html stands,
      less the clips that have no length (drawn at a stand-in one) */
   const totalMs = previewError ? blocksRef.current.reduce((end, b) => (b.noLength ? end : Math.max(end, Math.round(b.endMs))), 0) : drawnMs;
+  /* The film's length as film.html and its files give it, whether or not the preview has drawn it: the sound step
+     (and any step that does not mount the picture) still needs to know where the film ends. */
+  const filmLengthMs = React.useMemo(
+    () => timelineTracks.flatMap((track) => track.blocks).reduce((end, block) => (block.noLength ? end : Math.max(end, Math.round(block.endMs))), 0),
+    [timelineTracks],
+  );
+  /* the deliver step and the top bar can export before the preview has drawn (a project page opens without the editor
+     mounted): the timeline's own length is the film's then */
+  const filmMs = Math.max(totalMs, filmLengthMs);
 
   /* ── the project's editor settings (`.film/settings.json`): its frame rate, its tracks' names ── */
   const [settings, setSettings] = React.useState<ProjectSettings | null>(null);
@@ -1510,7 +1513,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
   hostCommands.current = (command) => {
     if (command.type === 'highlight') { setChatRef(command.ref ?? null); return; }
     if (command.type === 'draft-refs') { setDraftMarks(draftMarksOf(Array.isArray(command.refs) ? command.refs : [])); return; }
-    if (command.type === 'settings') { onSettings(command.section ?? 'agents', { projects: projectsOpenRef.current }); return; }
+    if (command.type === 'settings') { onSettings(command.section ?? 'agents'); return; }
     if (command.type === 'show-examples') { setExamplesOpen(command.open ?? true); return; }
     if (command.type === 'seek' && Number.isFinite(command.time)) { pause(); seek(command.time * 1000); return; }
     if ((command.type === 'show-range' || command.type === 'show-subtitle') && Number.isFinite(command.start) && Number.isFinite(command.end)) {
@@ -2658,8 +2661,8 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
     void api.setCover(projectId, { ms: Math.max(0, Math.min(totalMs - 1, timeRef.current)) })
       .then(() => toast.show(t('projects.coverSet')), () => toast.showError(t('projects.coverFailed')));
   };
-  /* the app's "New Tab" (its menu): the projects, to pick what the new tab shows */
-  React.useEffect(() => studioHost?.tabs?.onPick(() => setProjectsOpen(true)), []);
+  /* the app's "New Tab" (its menu): the project library, to pick what the new tab shows */
+  React.useEffect(() => studioHost?.tabs?.onPick(() => setWorkflowStage('project')), []);
   React.useEffect(() => { if (title) studioHost?.tabs?.report({ title }); }, [title]);
   const renameError = (e: unknown, name: string) =>
     toast.showError(e instanceof ApiError && e.body.code === 'agent-running' ? t('projects.agentRunningRename')
@@ -2683,8 +2686,6 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
     try { await api.rename(id, name); return true; }
     catch (e) { renameError(e, name); return false; }
   };
-  const [projectsOpen, setProjectsOpen] = React.useState(initialProjectsOpen);
-  projectsOpenRef.current = projectsOpen;
   /* the examples over the film, opened from the app's chat */
   /* the Community over the film: closed, open on its list (true), or on one skill's or example's page */
   const [examplesOpen, setExamplesOpen] = React.useState<boolean | CommunityItem>(false);
@@ -2725,16 +2726,17 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
     if (rect) setHistoryAnchor({ x: rect.right, y: rect.bottom + 4 });
     setHistoryOpen((v) => !v);
   };
-  const [exportOpen, setExportOpen] = React.useState(false);
   const [apiLogsOpen, setApiLogsOpen] = React.useState(false);
   const [exportClipId, setExportClipId] = React.useState<string | null>(null);
+  /* a clip's export is a visit to the deliver step with that clip in hand; leaving clears it */
+  React.useEffect(() => { if (workflowStage !== 'deliver') setExportClipId(null); }, [workflowStage]);
   /* the picture's menu is built before this: it reaches export through a ref */
   const exportTrayRef = React.useRef<ExportTrayHandle>(null);
   const openClipExport = React.useCallback((clipId: string) => {
-    if (!(totalMs > 0)) { toast.show(t('project.filmNotReady')); return; }
+    if (!(filmMs > 0)) { toast.show(t('project.filmNotReady')); return; }
     setExportClipId(clipId);
-    setExportOpen(true);
-  }, [totalMs, toast, t]);
+    stageGo.current('deliver');
+  }, [filmMs, toast, t]);
   openClipExportRef.current = openClipExport;
   const mgBlocks = React.useMemo(() => timelineTracks
     .filter((tr) => !tr.hidden)
@@ -2776,14 +2778,15 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
             <div className="pointer-events-auto relative flex min-w-0 items-center gap-1">
               <Tooltip label={t('project.appMenu')} side="bottom">
                 <button type="button" aria-label={t('project.appMenu')}
-                  onClick={() => onSettings('general', { projects: projectsOpen })}
+                  onClick={() => onSettings('general')}
                   className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--text-dim)] transition hover:bg-[var(--bg-hover)]">
                   <BrandLogo size={15} />
                 </button>
               </Tooltip>
               {inTabs ? null : <Tooltip label={t('nav.projects')} side="bottom">
-                <button type="button" aria-label={t('nav.projects')} onClick={() => setProjectsOpen((v) => !v)}
-                  className={`${TOP_BTN} ${projectsOpen ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
+                <button type="button" aria-label={t('nav.projects')} aria-pressed={workflowStage === 'project'}
+                  onClick={() => goStage('project')}
+                  className={`${TOP_BTN} ${workflowStage === 'project' ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
                   <GalleryVerticalEnd size={15} />
                 </button>
               </Tooltip>}
@@ -2815,7 +2818,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
               <WebUpdateButton />
             </div>
             {inTabs ? (
-              <TabStrip onRename={renameTab} onNew={() => setProjectsOpen(true)} onCoverFromFrame={coverFromFrame} maxLength={TITLE_MAX_CHARS} />
+              <TabStrip onRename={renameTab} onNew={() => goStage('project')} onCoverFromFrame={coverFromFrame} maxLength={TITLE_MAX_CHARS} />
             ) : (
               /* the six steps, in the order a film is made: the editor is one of them, not the whole window */
               <div className="mx-2 flex min-w-0 flex-1 items-center justify-center overflow-hidden">
@@ -2848,10 +2851,10 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
               ) : null}
               <ProjectHistoryButton open={historyOpen} onClick={openHistory} className={TOP_BTN} />
               <Tooltip label={t('projectMenu.export')} side="bottom">
-                <button type="button" aria-label={t('projectMenu.export')} aria-haspopup="dialog" aria-expanded={exportOpen} className={TOP_BTN}
+                <button type="button" aria-label={t('projectMenu.export')} className={TOP_BTN}
                   onClick={() => {
                     if (previewError) toast.showError(`${t('project.filmCannotExport')} ${previewError}`);
-                    else if (totalMs > 0) setExportOpen(true);
+                    else if (filmMs > 0) { setExportClipId(null); goStage('deliver'); }
                     else toast.show(t('project.filmNotReady'));
                   }}>
                   <Upload size={16} />
@@ -3298,7 +3301,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
                   }
                 }}
                 onEnterEdit={() => setWorkflowStage('edit')}
-                onSettings={() => onSettings('agents', { projects: projectsOpenRef.current })}
+                onSettings={() => onSettings('agents')}
                 notify={(message) => toast.show(message)}
                 error={(message) => toast.showError(message)}
               />
@@ -3310,20 +3313,55 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
                 poster={posterUrl({ id: projectId, cover: loaded.project.cover })}
                 stage={stage}
                 fps={projectFps}
-                durationMs={totalMs}
+                durationMs={filmMs}
                 tracks={filmSummary.tracks}
                 clips={filmSummary.clips}
                 captions={subs.count}
                 onReveal={() => reveal('')}
-                onExport={() => setExportOpen(true)}
+                onExport={() => { setExportClipId(null); goStage('deliver'); }}
                 onEdit={() => setWorkflowStage('edit')}
                 onOpenProject={(id) => onProject(id)}
                 onLeave={onLeave}
               />
             ) : workflowStage === 'sound' ? (
-              <SoundStage durationMs={totalMs} tracks={soundTrackCount} onNext={() => setWorkflowStage('deliver')} />
+              <SoundStage
+                projectId={projectId}
+                durationMs={Math.max(totalMs, filmLengthMs)}
+                initialPosMs={timeMs}
+                folder={folder}
+                stage={stage}
+                film={film.film}
+                fps={exactRate(projectFps)}
+                onNext={() => setWorkflowStage('edit')}
+                onManageMedia={() => setWorkflowStage('media')}
+                onImport={onImport}
+                onDelete={onDelete}
+                onReveal={(path) => reveal(path)}
+                onSettings={() => onSettings('providers')}
+                onEditOps={editOps}
+                onUndo={() => stepHistory('undo')}
+                onRedo={() => stepHistory('redo')}
+                subtitleLines={(subs.captions?.cues ?? []).map((cue) => cue.text.trim()).filter(Boolean)}
+                notify={(message) => toast.show(message)}
+                error={(message) => toast.showError(message)}
+              />
             ) : (
-              <DeliverStage durationMs={totalMs} onExport={() => setExportOpen(true)} />
+              <DeliverStage>
+                <ExportCenter
+                  projectId={projectId}
+                  title={title || 'video'}
+                  durationMs={filmMs}
+                  stage={stage}
+                  frame="native"
+                  film={exportFilm as never}
+                  playheadMs={timeMs}
+                  mgBlocks={mgBlocks}
+                  {...(exportClipId ? { focusClipId: exportClipId } : {})}
+                  onQueued={(jobs) => exportTrayRef.current?.push(jobs)}
+                  projectFps={projectFps}
+                  missingFiles={[...mediaTrouble].flatMap(([src, why]) => (why === 'missing' ? [src] : []))}
+                />
+              </DeliverStage>
             )}
           </section>
         </div>
@@ -3331,7 +3369,6 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
 
       <ApiLogWindow open={apiLogsOpen} onClose={() => setApiLogsOpen(false)} />
       <ProjectHistoryControls projectId={projectId} history={history} open={historyOpen} anchor={historyAnchor} onClose={() => setHistoryOpen(false)} />
-      <ProjectsPopover open={projectsOpen} currentProjectId={projectId} onOpen={(id) => { if (!studioHost?.tabs) setProjectsOpen(false); onProject(id); }} onCurrentRemoved={onLeave} onClose={() => setProjectsOpen(false)} />
       {examplesOpen ? (
         <ExamplesDialog projectId={projectId} open={examplesOpen === true ? undefined : examplesOpen} onClose={() => setExamplesOpen(false)}
           /* a film started from an example: in a tab of its own where there are tabs, else here */
@@ -3346,22 +3383,6 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings, initial
           {mediaPool()}
         </div>
       ) : null}
-      <ExportCenter
-        open={exportOpen}
-        onClose={() => { setExportOpen(false); setExportClipId(null); }}
-        projectId={projectId}
-        title={title || 'video'}
-        durationMs={totalMs}
-        stage={stage}
-        frame="native"
-        film={exportFilm as never}
-        playheadMs={timeMs}
-        mgBlocks={mgBlocks}
-        {...(exportClipId ? { focusClipId: exportClipId } : {})}
-        onQueued={(jobs) => exportTrayRef.current?.push(jobs)}
-        projectFps={projectFps}
-        missingFiles={[...mediaTrouble].flatMap(([src, why]) => (why === 'missing' ? [src] : []))}
-      />
       <PasteAttrsDialog attrs={pasteAttrsOpen ? copiedAttrs : null} onPaste={doPasteAttrs} onCancel={() => setPasteAttrsOpen(false)} />
       <ExportTray ref={exportTrayRef} projectId={projectId} onError={toast.showError} inset={hostPanel?.open ? hostPanel.width : 0} />
       <SpendAsks projectId={projectId} />

@@ -50,6 +50,9 @@ export interface ContextMenuSeparator {
 
 export type ContextMenuEntry = ContextMenuItem | ContextMenuSeparator;
 
+/** The fields that keep a text menu (copy / cut / paste): not a slider, a checkbox or a button. */
+export const TEXT_FIELD = 'input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]), textarea, [contenteditable="true"]';
+
 function isItem(e: ContextMenuEntry): e is ContextMenuItem {
   return !('separator' in e);
 }

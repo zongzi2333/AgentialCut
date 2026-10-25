@@ -33,8 +33,14 @@ import doubao from './doubao.mjs';
  * @typedef {import('../http.mjs').Req} Req @typedef {import('../http.mjs').Res} Res
  */
 
+/** Services whose key is used for a search, not for making a kind of media (they take no `use` choice). */
+const SEARCH_ONLY = /** @type {Provider[]} */ ([
+  { id: 'freesound', name: 'Freesound', env: 'FREESOUND_API_KEY', keysUrl: 'https://freesound.org/apiv2/apply/', billingUrl: 'https://freesound.org/apiv2/apply/', verbs: [], models: {}, async run() { throw new Error('Freesound is a search service, not a media generator.'); } },
+  { id: 'jamendo', name: 'Jamendo', env: 'JAMENDO_CLIENT_ID', keysUrl: 'https://devportal.jamendo.com/', billingUrl: 'https://devportal.jamendo.com/', verbs: [], models: {}, async run() { throw new Error('Jamendo is a search service, not a media generator.'); } },
+]);
+
 /** The providers paid with the person's own key. */
-const OWN = [elevenlabs, openai, google, fal, pexels, pixabay, brave, tavily, groq, azure, doubao];
+const OWN = [...SEARCH_ONLY, elevenlabs, openai, google, fal, pexels, pixabay, brave, tavily, groq, azure, doubao];
 
 /** The kinds of media the person chooses a provider and model for (Settings → Services). */
 const USE_VERBS = /** @type {Verb[]} */ (['tts', 'music', 'sfx', 'asr', 'image', 'image-search', 'video', 'translate', 'web-search']);

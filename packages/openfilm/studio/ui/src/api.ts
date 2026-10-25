@@ -284,6 +284,160 @@ export interface PipelineRun {
   storyboardRevision: number | null; applied: string[]; issues: string[];
 }
 
+/* ── the sound stage: what the film sounds like, where more sound comes from, and placement (server/audio.mjs) ── */
+
+/** The three kinds of sound the stage makes; a film's own footage sound is read beside them. */
+export type SoundRole = 'voice' | 'music' | 'sfx';
+/** A role as the film shows it: the three above, or the sound that came with a video. */
+export type AudioRole = SoundRole | 'footage';
+
+/** An audio file in the project (`GET audio/library`, and the file behind a timeline clip). */
+export interface AudioAsset {
+  /** The project path for a library file; the clip's id on the timeline (see AudioClip). */
+  id: string;
+  path: string;
+  name: string;
+  /** Its name without the ending, or the person's title for an import. */
+  title: string;
+  role: AudioRole;
+  roleName: string;
+  kind: 'audio';
+  size: number;
+  mtime: number;
+  /** The file's length, when ffprobe could read it; null: not measured yet. */
+  durationMs: number | null;
+  previewUrl: string | null;
+  /** `local`, `download` (a network import), or `ai` (made by a provider). */
+  source: string;
+  credit?: string;
+  license?: string;
+  page?: string;
+  /** The file has no sound in it (an import of something else, or a broken file). */
+  unreadable?: string;
+  /** The file named is not there any more (a clip that outlived its file). */
+  missing?: boolean;
+}
+
+/** A sound clip on the film's timeline: its place, and the part of the file it plays. */
+export interface AudioClip extends AudioAsset {
+  /** The clip's id in film.html. */
+  id: string;
+  /** The track it is on (film.html index). */
+  track: number;
+  /** Where it starts in the film. */
+  atMs: number;
+  /** The part of its file it plays, in the file's own time. */
+  startMs: number;
+  endMs: number;
+  /** How long it is on the film (the trimmed part, at its speed). */
+  durationMs: number;
+  speed: number;
+  volume: number;
+  fadeInMs: number;
+  fadeOutMs: number;
+  muted?: boolean;
+  hidden?: boolean;
+  locked?: boolean;
+  /** The file is not there any more. */
+  missing?: boolean;
+}
+
+/** A track that carries sound, as the sound stage reads it. */
+export interface AudioTrackView {
+  index: number;
+  name: string;
+  role: AudioRole | 'mixed';
+  roles: AudioRole[];
+  muted?: boolean;
+  hidden?: boolean;
+  locked?: boolean;
+  clips: AudioClip[];
+}
+
+export interface AudioRoleSummary { role: AudioRole; roleName: string; count: number; durationMs: number }
+
+/** `GET audio`: the film's sound, read from film.html (no second edit). */
+export interface AudioState {
+  revision: string;
+  durationMs: number;
+  tracks: AudioTrackView[];
+  clips: AudioClip[];
+  summary: Partial<Record<AudioRole, AudioRoleSummary>>;
+}
+
+/** `GET audio/catalog`: whether a provider that makes each kind is connected. */
+export interface AudioCatalogKind {
+  kind: SoundRole;
+  verb: string;
+  available: boolean;
+  options?: Record<string, unknown>;
+  dir?: string;
+  /** The person's own service card making this kind, when that is what is connected. */
+  provider?: string;
+  model?: string;
+}
+export interface AudioCatalog {
+  kinds: Record<SoundRole, AudioCatalogKind>;
+  note: string | null;
+  services: string;
+}
+
+/** One search source and whether this machine can use it (`available: false` says what is missing). */
+export interface AudioSourceState { id: 'local' | 'freesound' | 'jamendo'; available: boolean; count?: number; note?: string }
+
+/** A network result: enough to hear it and import it, with the attribution the UI must show. */
+export interface AudioSearchResult {
+  source: string;
+  id: string;
+  role: SoundRole;
+  title: string;
+  durationMs: number | null;
+  downloadUrl?: string;
+  previewUrl?: string;
+  page?: string;
+  credit?: string;
+  license?: string;
+  tags?: string[];
+  artist?: string;
+}
+
+export interface AudioSearchResponse {
+  query: string;
+  role: SoundRole | 'all';
+  results: AudioSearchResult[];
+  sources: AudioSourceState[];
+}
+
+/** `GET audio/voices`: the provider's voices (`voices` is absent when it cannot list them). */
+export interface AudioVoice { voiceId: string; name: string; language: string | null; gender: string | null; description: string | null }
+export interface AudioVoicesResponse { provider?: string; voices?: AudioVoice[]; note?: string; text?: string }
+
+/** `POST audio/generate`: the file made, and the provider's receipt. */
+export interface AudioGenerateResponse { asset: AudioAsset; receipt?: Record<string, unknown>; output?: string }
+/** `POST audio/import`: the file kept in the project. */
+export interface AudioImportResponse { asset: AudioAsset; unreadable?: string }
+/** The film as an audio write leaves it (`/edit`'s answer). */
+export interface AudioEditResponse { text: string; rev: string; value: Film; doc: Film; rebased: boolean }
+/** `POST audio/place`: the edit, and the clip it put on the timeline. */
+export interface AudioPlaceResponse extends AudioEditResponse { clipId: string | null }
+
+/** What a sound's file says about itself (`GET audio/asset?what=probe`). */
+export interface AudioProbe { duration?: number; width?: number; height?: number; fps?: number; audio?: boolean }
+
+/** What to do with a sound when it is put on the film: seconds in the film and in the file, as the API takes them. */
+export interface AudioPlaceBody {
+  path: string;
+  at: number;
+  start?: number;
+  end?: number;
+  volume?: number;
+  fade?: [number, number];
+  speed?: number;
+  track?: number;
+  /** The revision this placement was planned against; a conflict is a 409 with the film's own revision. */
+  base?: string | null;
+}
+
 /* The model services behind Settings → Agents. A key is never returned to the page. */
 
 
@@ -376,6 +530,57 @@ export const api = {
   /** the person opened it here: the one `openfilm open` alone comes back to */
   opened: (id: string) => call<{ project: Project }>(`${p(id)}/opened`, { method: 'POST' }),
   edit: (id: string, base: string | null, ops: Op[]) => call<{ text: string; rev: string; value: Film; doc: Film; rebased: boolean }>(`${p(id)}/edit`, { method: 'POST', json: { base, ops } }),
+  /* ── the sound stage (server/audio.mjs): reads, sources, generation, placement, native edits ── */
+  /** The film's sound: its tracks, its clips, and how much of each kind it has. */
+  audio: (id: string) => call<AudioState>(`${p(id)}/audio`),
+  /** The project's own audio under assets/ (names and paths; `facts` adds what ffprobe says). */
+  audioLibrary: (id: string, how: { role?: AudioRole | 'all'; q?: string; facts?: boolean } = {}) => call<{ role: string; q: string; files: AudioAsset[]; folderUrl: string }>(
+    `${p(id)}/audio/library?${new URLSearchParams({
+      ...(how.role ? { role: how.role } : {}),
+      ...(how.q ? { q: how.q } : {}),
+      facts: how.facts === false ? '0' : '1',
+    })}`,
+  ),
+  /** A sound file's length and streams; its waveform; its loudness over a part (the file's own seconds). */
+  audioProbe: (id: string, path: string) => call<AudioProbe>(`${p(id)}/audio/asset?what=probe&path=${encodeURIComponent(path)}`),
+  audioWave: (id: string, path: string) => call<{ duration: number; peaks: number[] }>(`${p(id)}/audio/asset?what=wave&path=${encodeURIComponent(path)}`),
+  audioLoudness: (id: string, path: string, from: number, to?: number) => call<{ lufs: number | null; peak: number | null }>(
+    `${p(id)}/audio/asset?what=loudness&path=${encodeURIComponent(path)}&from=${from}${to == null ? '' : `&to=${to}`}`,
+  ),
+  /** Whether a provider that makes a voice-over, music or an effect is connected. */
+  audioCatalog: (id: string) => call<AudioCatalog>(`${p(id)}/audio/catalog`),
+  /** The project's own sounds and the two stock services; sources say what is connected. */
+  audioSearch: (id: string, how: { role?: AudioRole | 'all'; q?: string; source?: 'local' | 'freesound' | 'jamendo' | 'all'; limit?: number } = {}) => call<AudioSearchResponse>(
+    `${p(id)}/audio/search?${new URLSearchParams({
+      ...(how.role ? { role: how.role } : {}),
+      ...(how.q ? { q: how.q } : {}),
+      ...(how.source ? { source: how.source } : {}),
+      ...(how.limit ? { limit: String(how.limit) } : {}),
+    })}`,
+  ),
+  /** A public audio address kept in the project, under its role's folder (`assets/audio/sfx`, `.../music`, `.../vo`). */
+  audioImport: (id: string, body: { url: string; role?: SoundRole; name?: string; source?: string; meta?: { credit?: string; license?: string; page?: string; source?: string } }) => call<AudioImportResponse>(
+    `${p(id)}/audio/import`, { method: 'POST', json: body },
+  ),
+  /** The connected provider's voices, as `openfilm get voice` lists them. */
+  audioVoices: (id: string, how: { q?: string; language?: string; gender?: string; limit?: number } = {}) => call<AudioVoicesResponse>(
+    `${p(id)}/audio/voices?${new URLSearchParams({
+      ...(how.q ? { q: how.q } : {}),
+      ...(how.language ? { language: how.language } : {}),
+      ...(how.gender ? { gender: how.gender } : {}),
+      ...(how.limit ? { limit: String(how.limit) } : {}),
+    })}`,
+  ),
+  /** A voice-over read, a score or an effect made through `openfilm get`; the file is the project's once it answers. */
+  audioGenerate: (id: string, body:
+    | { kind: 'voice'; text: string; voice: string; out?: string; via?: string; model?: string }
+    | { kind: 'music' | 'sfx'; prompt: string; sec?: number; out?: string; via?: string; model?: string }) => call<AudioGenerateResponse>(
+    `${p(id)}/audio/generate`, { method: 'POST', json: body },
+  ),
+  /** One sound put on the film: the native insert, with its trim, volume, fades and speed. */
+  audioPlace: (id: string, body: AudioPlaceBody) => call<AudioPlaceResponse>(`${p(id)}/audio/place`, { method: 'POST', json: body }),
+  /** Every native film operation (insert, move, set, props, split, fields, remove, track, reorder, stage). */
+  audioOps: (id: string, base: string | null, ops: Op[]) => call<AudioEditResponse>(`${p(id)}/audio/ops`, { method: 'POST', json: { base, ops } }),
   files: (id: string) => call<Listing>(`${p(id)}/files`),
   /** the one conversation endpoint: storyboard operations or applied timeline edits, by scope */
   agentChat: (id: string, body: { text: string; scope?: 'storyboard' | 'edit'; selectedIds?: string[]; selectedClipIds?: string[] }) => call<AgentChatResponse>(`${p(id)}/agent/chat`, { method: 'POST', json: body }),

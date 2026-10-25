@@ -158,6 +158,7 @@ const WORDS = /** @type {Record<string, string>} */ ({
 /** The media services `get` can use, by name (none comes first), what each makes, and where the person connects them. */
 export const services = () => `Media services, each used with the person's own key: ${listProviders()
   .map((p) => ({ name: p.name, makes: p.verbs.filter((v) => WORDS[v]).map((v) => WORDS[v]).join(', ') }))
+  .filter((p) => p.makes)
   .sort((a, b) => a.name.localeCompare(b.name)).map((p) => `${p.name} (${p.makes})`).join(', ')}. ${WHERE_TO_CONNECT}`;
 
 /** How long the person has to answer a question about spending. */
