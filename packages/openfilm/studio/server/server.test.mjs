@@ -70,10 +70,10 @@ test('a page\'s address with the key signs a browser in (a copied address opens 
   assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
   const [cookie] = page.headers.getSetCookie();
   assert.equal((await api('/api/projects', { key: null, headers: { cookie: cookie.split(';')[0] } })).status, 200);
-  /* signed in, an address without the key (typed, or from before) is sent to the one with it */
+  /* signed in through the loopback cookie: the bare address serves the editor directly (typing
+     127.0.0.1:port works); it is no longer redirected to a keyed address. */
   const bare = await api('/projects/x?t=2', { key: null, headers: { cookie: cookie.split(';')[0] } });
-  assert.equal(bare.status, 302);
-  assert.equal(bare.headers.get('location'), `/projects/x?t=2&key=${studio.key}`);
+  assert.equal(bare.status, 200);
   /* not signed in and no key: the page, which says how to get in; a wrong key signs nothing in */
   assert.equal((await api('/projects/x', { key: null })).status, 200);
   assert.deepEqual((await api('/projects/x?key=wrong', { key: null })).headers.getSetCookie(), []);
@@ -383,7 +383,7 @@ test('the preview plays heavy footage from its proxy once made; what the file is
   assert.ok(played > 0 && played !== statSync(big).size, 'the proxy');
   assert.equal(await size('?film-facts=1'), statSync(big).size, 'what the file is: the file');
   /* off: the original, and no proxy asked for */
-  assert.deepEqual(await (await api('/api/prefs', { method: 'PATCH', body: { proxies: { on: false } } })).json(), { proxies: { on: false, height: 720 }, seenVersion: null, projectsFolder: null, keys: null });
+  assert.deepEqual(await (await api('/api/prefs', { method: 'PATCH', body: { proxies: { on: false } } })).json(), { proxies: { on: false, height: 720 }, seenVersion: null, projectsFolder: null, keys: null, storyboard: { candidateCount: 16 } });
   assert.equal(await size(), statSync(big).size);
   assert.deepEqual((await (await api(`/api/projects/${project.id}/proxies`, { method: 'POST', body: {} })).json()).states, {});
   await api('/api/prefs', { method: 'PATCH', body: { proxies: { on: true } } });

@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeAtomic } from './atomic.mjs';
+import { normalizePlan } from './pipeline-plan.mjs';
 
 export const PIPELINE_STEPS = [
   { id: 'generate', label: '生成/转换分镜' },
@@ -20,7 +21,8 @@ const FILE_NAME = 'roughcut-run.json';
 
 /** @typedef {'idle' | 'running' | 'done' | 'error' | 'cancelled'} RunState */
 /** @typedef {{ id: string, label: string, state: 'idle' | 'running' | 'done' | 'skipped' | 'error', detail?: string, startedAt?: number, finishedAt?: number }} PipelineStep */
-/** @typedef {{ id: string, state: RunState, step: string, steps: PipelineStep[], startedAt: number | null, updatedAt: number, finishedAt: number | null, error: string, cancelRequested: boolean, storyboardRevision: number | null, applied: string[], issues: string[] }} PipelineRun */
+/** @typedef {import('./pipeline-plan.mjs').AgentPlan} AgentPlan */
+/** @typedef {{ id: string, state: RunState, step: string, steps: PipelineStep[], plan: AgentPlan | null, startedAt: number | null, updatedAt: number, finishedAt: number | null, error: string, cancelRequested: boolean, storyboardRevision: number | null, applied: string[], issues: string[] }} PipelineRun */
 
 const now = () => Date.now();
 
@@ -31,6 +33,7 @@ export function emptyRun() {
     state: 'idle',
     step: '',
     steps: PIPELINE_STEPS.map((step) => ({ ...step, state: 'idle' })),
+    plan: null,
     startedAt: null,
     updatedAt: 0,
     finishedAt: null,
@@ -88,12 +91,39 @@ function normalizeRun(/** @type {unknown} */ value) {
     if (Number.isFinite(Number(item.startedAt))) step.startedAt = Number(item.startedAt);
     if (Number.isFinite(Number(item.finishedAt))) step.finishedAt = Number(item.finishedAt);
   }
+  const plan = raw.plan && typeof raw.plan === 'object'
+    ? normalizePlan(raw.plan, {
+      input: raw.plan.input && typeof raw.plan.input === 'object' ? raw.plan.input : {},
+      source: raw.plan.source === 'retry' ? 'retry' : raw.plan.source === 'default' ? 'default' : 'model',
+    })
+    : null;
+  if (plan) {
+    for (const item of plan.steps) {
+      const existing = byId.get(item.id);
+      if (existing) {
+        existing.state = item.state;
+        if (item.detail) existing.detail = item.detail;
+        if (Number.isFinite(item.startedAt)) existing.startedAt = item.startedAt;
+        if (Number.isFinite(item.finishedAt)) existing.finishedAt = item.finishedAt;
+      } else {
+        byId.set(item.id, {
+          id: item.id,
+          label: item.label,
+          state: item.state,
+          ...(item.detail ? { detail: item.detail } : {}),
+          ...(Number.isFinite(item.startedAt) ? { startedAt: item.startedAt } : {}),
+          ...(Number.isFinite(item.finishedAt) ? { finishedAt: item.finishedAt } : {}),
+        });
+      }
+    }
+  }
   return /** @type {PipelineRun} */ ({
     ...base,
     id: typeof raw.id === 'string' ? raw.id : '',
     state: ['idle', 'running', 'done', 'error', 'cancelled'].includes(raw.state) ? raw.state : 'idle',
     step: typeof raw.step === 'string' ? raw.step : '',
     steps: [...byId.values()],
+    plan,
     startedAt: Number.isFinite(Number(raw.startedAt)) ? Number(raw.startedAt) : null,
     updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : 0,
     finishedAt: Number.isFinite(Number(raw.finishedAt)) ? Number(raw.finishedAt) : null,
@@ -105,8 +135,24 @@ function normalizeRun(/** @type {unknown} */ value) {
   });
 }
 
+/** Keep the old page-facing step list in step with the plan. */
+export function syncRunPlan(/** @type {PipelineRun} */ run) {
+  if (!run.plan) return run;
+  run.steps = run.plan.steps.map((step) => ({
+    id: step.id,
+    label: step.label,
+    state: step.state,
+    ...(step.detail ? { detail: step.detail } : {}),
+    ...(Number.isFinite(step.startedAt) ? { startedAt: step.startedAt } : {}),
+    ...(Number.isFinite(step.finishedAt) ? { finishedAt: step.finishedAt } : {}),
+  }));
+  run.step = run.plan.steps.find((step) => step.state === 'running')?.id ?? '';
+  return run;
+}
+
 export async function writeRun(/** @type {{ path: string }} */ project, /** @type {PipelineRun} */ run) {
   await mkdir(join(project.path, '.film'), { recursive: true });
+  syncRunPlan(run);
   run.updatedAt = now();
   await writeAtomic(runFile(project), `${JSON.stringify(run, null, 2)}\n`, { mode: 0o600 });
   return run;
@@ -116,6 +162,13 @@ export async function patchRun(/** @type {{ path: string }} */ project, /** @typ
   const run = readRun(project);
   change(run);
   return writeRun(project, run);
+}
+
+/** The page's view: keep the user's script out of the polling response while the run file keeps it for retry. */
+export function publicRun(/** @type {PipelineRun} */ run) {
+  if (!run.plan) return run;
+  const { input: _input, ...plan } = run.plan;
+  return { ...run, plan };
 }
 
 export function step(/** @type {PipelineRun} */ run, /** @type {string} */ id) {

@@ -32,8 +32,10 @@ export function StoryboardStage({
   sources,
   onAddToTimeline,
   onHandoffComplete,
-  onEnterEdit,
+  onEnterSound,
   onSettings,
+  chatOpen,
+  onCloseChat,
   notify,
   error,
 }: {
@@ -43,8 +45,11 @@ export function StoryboardStage({
   onAddToTimeline: (items: readonly { path: string; startMs: number; endMs: number }[], options?: { replace?: boolean }) => Promise<number>;
   /** after the rough cut is in the timeline: make its subtitles when the person asked for them */
   onHandoffComplete?: (subtitles: boolean) => Promise<void>;
-  onEnterEdit: () => void;
+  onEnterSound: () => void;
   onSettings: () => void;
+  /** The storyboard agent's conversation is shown in the right pane. */
+  chatOpen: boolean;
+  onCloseChat: () => void;
   notify: (message: string) => void;
   error: (message: string) => void;
 }) {
@@ -426,7 +431,7 @@ export function StoryboardStage({
     if (added < result.clips.length) error(`只导入了 ${added}/${result.clips.length} 个镜头；其余素材不在项目文件夹中。`);
     notify(t('storyboard.handoffDone'));
     await onHandoffComplete?.(handoffSubtitles);
-    onEnterEdit();
+    onEnterSound();
   };
 
   const filteredScene = (sceneId: string) => (doc?.shots ?? []).filter((shot) => shot.sceneId === sceneId && visibleShots.includes(shot));
@@ -523,11 +528,15 @@ export function StoryboardStage({
           <RhythmStrip doc={doc} selected={selected} onSelect={(shot) => select(shot)} />
         </section>
 
-        <PaneDivider width={directorW} onResize={commitDirectorWidth} containerRef={rowRef} label="调整分镜板与 AI 导演的宽度" min={300} minRest={420} side="end" />
-        <div className="flex min-h-0 shrink-0" style={{ width: directorW }}>
-          <DirectorPanel projectId={projectId} doc={doc} selectedIds={selected} busy={story.busy} error={story.error || ''} configured={configured}
-            chat={async (text, ids) => { await story.flush(); return story.chat(text, ids); }} apply={async (proposal, operations) => { await story.flush(); return story.apply(proposal, operations); }} onMatch={runMatch} onGenerateFromPrompt={generateFromPrompt} onOpenSettings={onSettings} onUndo={story.undo} pipeline={pipeline} />
-        </div>
+        {chatOpen ? (
+          <>
+            <PaneDivider width={directorW} onResize={commitDirectorWidth} containerRef={rowRef} label="调整分镜板与 AI 分镜助手的宽度" min={300} minRest={420} side="end" />
+            <div className="flex min-h-0 shrink-0" style={{ width: directorW }}>
+              <DirectorPanel projectId={projectId} doc={doc} selectedIds={selected} busy={story.busy} error={story.error || ''} configured={configured}
+                chat={async (text, ids, signal) => { await story.flush(); return story.chat(text, ids, signal); }} apply={async (proposal, operations) => { await story.flush(); return story.apply(proposal, operations); }} onMatch={runMatch} onGenerateFromPrompt={generateFromPrompt} onOpenSettings={onSettings} onUndo={story.undo} onRedo={story.redo} canUndo={story.canUndo} canRedo={story.canRedo} history={story.history} onRollback={story.rollbackTo} onClose={onCloseChat} onRetry={() => void api.retryStoryboardRun(projectId).then(setPipeline).catch((e) => error(e instanceof Error ? e.message : String(e)))} onCancel={() => void api.cancelStoryboardRun(projectId).then(setPipeline).catch((e) => error(e instanceof Error ? e.message : String(e)))} onReload={story.refresh} pipeline={pipeline} />
+            </div>
+          </>
+        ) : null}
       </div>
 
       <DockPaneDivider height={shelfH} onResize={commitShelfHeight} containerRef={stageRef} label="调整素材池高度" min={MIN_DOCK_H} minRest={MIN_STAGE_H} />
@@ -773,8 +782,8 @@ function ShotCard({ shot, selected, expanded, onToggleExpanded, onSelect, onChan
           <span className="truncate text-[11.5px] font-medium text-[var(--text)]" title={shot.title}>{shot.title}</span>
         </div>
         <div className="grid grid-cols-[26px_minmax(0,1fr)] items-baseline gap-1.5">
-          <span className="text-[9px] text-[var(--text-faint)]">旁白</span>
-          <span className="line-clamp-2 min-h-[27px] text-left text-[10.5px] leading-snug text-[var(--text-muted)]">{shot.narration || '暂无旁白；双击这里填写'}</span>
+          <span className="text-[9px] text-[var(--text-faint)]">字幕</span>
+          <span className="line-clamp-2 min-h-[27px] text-left text-[10.5px] leading-snug text-[var(--text-muted)]">{shot.narration || '暂无字幕；双击这里填写'}</span>
         </div>
         <div className="grid grid-cols-[26px_minmax(0,1fr)] items-baseline gap-1.5">
           <span className="text-[9px] text-[var(--text-faint)]">画面</span>
@@ -796,7 +805,7 @@ function ShotCard({ shot, selected, expanded, onToggleExpanded, onSelect, onChan
             <div className="mt-1 grid gap-1.5 border-t border-[var(--border-soft)] pt-2 sm:grid-cols-2">
               <label className="flex flex-col gap-0.5 text-[9px] text-[var(--text-faint)]">标题<input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} onClick={(event) => event.stopPropagation()} className="h-7 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[10.5px] text-[var(--text)] outline-none focus:border-[var(--border-strong)]" /></label>
               <label className="flex flex-col gap-0.5 text-[9px] text-[var(--text-faint)]">画面要求<input value={form.visualIntent} onChange={(event) => setForm({ ...form, visualIntent: event.target.value })} onClick={(event) => event.stopPropagation()} className="h-7 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[10.5px] text-[var(--text)] outline-none focus:border-[var(--border-strong)]" /></label>
-              <label className="flex flex-col gap-0.5 text-[9px] text-[var(--text-faint)] sm:col-span-2">旁白<textarea value={form.narration} onChange={(event) => setForm({ ...form, narration: event.target.value })} onClick={(event) => event.stopPropagation()} rows={2} className="resize-y rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-1 text-[10.5px] text-[var(--text)] outline-none focus:border-[var(--border-strong)]" /></label>
+              <label className="flex flex-col gap-0.5 text-[9px] text-[var(--text-faint)] sm:col-span-2">字幕<textarea value={form.narration} onChange={(event) => setForm({ ...form, narration: event.target.value })} onClick={(event) => event.stopPropagation()} rows={2} className="resize-y rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-1 text-[10.5px] text-[var(--text)] outline-none focus:border-[var(--border-strong)]" /></label>
               <div className="grid grid-cols-2 gap-1.5">
                 <label className="flex flex-col gap-0.5 text-[9px] text-[var(--text-faint)]">目标秒数<NumberInput min={0.5} max={120} step={0.1} value={form.targetMs / 1000} onCommit={(value) => setForm({ ...form, targetMs: Math.max(500, Math.round((value ?? 4) * 1000)) })} onClick={(event) => event.stopPropagation()} className="h-7 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[10.5px] tabular-nums text-[var(--text)] outline-none" /></label>
                 <label className="flex items-center gap-1 text-[9px] text-[var(--text-faint)]"><input type="checkbox" checked={shot.locked} onChange={() => onChange({ locked: !shot.locked })} onClick={(event) => event.stopPropagation()} />锁定</label>

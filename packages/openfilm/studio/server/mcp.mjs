@@ -13,17 +13,25 @@ import {
   MCP_TOOL_DEFINITIONS,
   editStoryboardTool,
   editTimelineTool,
+  fillStoryboardTool,
+  handoffStoryboardTool,
   listProjectFilesTool,
+  matchStoryboardTool,
   qcTool,
   readProjectTool,
   readStoryboardTool,
   readTimelineTool,
   searchMaterialsTool,
   undoTimelineTool,
+  validateStoryboardTool,
 } from './agent-tools.mjs';
+import { listWorkspace, readWorkspaceFile, runWorkspaceCode, writeWorkspaceFile } from './agent-workspace.mjs';
 
 const PROTOCOL_VERSION = '2025-06-18';
-const STORYBOARD_TOOL_NAMES = new Set(['read_storyboard', 'edit_storyboard']);
+const STORYBOARD_TOOL_NAMES = new Set([
+  'read_storyboard', 'edit_storyboard', 'match_storyboard', 'fill_storyboard',
+  'handoff_storyboard', 'validate_storyboard',
+]);
 
 function result(/** @type {unknown} */ id, /** @type {unknown} */ value) {
   return { jsonrpc: '2.0', id, result: value };
@@ -39,6 +47,14 @@ async function callTool(/** @type {string} */ name, /** @type {any} */ args, /**
     case 'read_storyboard': return readStoryboardTool(context.project);
     case 'read_timeline': return readTimelineTool(context.project);
     case 'list_project_files': return listProjectFilesTool(context.project);
+    case 'match_storyboard': return matchStoryboardTool(context.project, context.semanticIndex, args);
+    case 'fill_storyboard': return fillStoryboardTool(context.project, args);
+    case 'handoff_storyboard': return handoffStoryboardTool(context.project);
+    case 'validate_storyboard': return validateStoryboardTool(context.project);
+    case 'workspace_list': return listWorkspace(context.project, 'shared', args.path ?? '.');
+    case 'workspace_read': return readWorkspaceFile(context.project, 'shared', args.path);
+    case 'workspace_write': return writeWorkspaceFile(context.project, 'shared', args.path, args.content);
+    case 'run_code': return runWorkspaceCode(context.project, 'shared', { language: args.language, code: args.code, timeoutMs: args.timeoutMs });
     case 'edit_storyboard': return editStoryboardTool(context.project, args);
     case 'edit_timeline': return editTimelineTool(context.project, args);
     case 'undo_timeline': return undoTimelineTool(context.project);

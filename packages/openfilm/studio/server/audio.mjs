@@ -587,7 +587,7 @@ export async function listVoices(/** @type {string} */ root, /** @type {Record<s
 }
 
 /** A search of local files and, when asked, the two stock services. */
-async function searchAll(/** @type {string} */ root, /** @type {Record<string, any>} */ query, /** @type {string} */ folderUrl) {
+export async function searchAll(/** @type {string} */ root, /** @type {Record<string, any>} */ query, /** @type {string} */ folderUrl) {
   const role = KINDS.includes(query.role) ? /** @type {SoundKind} */ (query.role) : 'all';
   const source = ['all', 'local', 'freesound', 'jamendo'].includes(query.source) ? String(query.source) : 'all';
   const q = typeof query.q === 'string' ? query.q.trim() : '';

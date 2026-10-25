@@ -9,12 +9,17 @@
  * permissions.
  */
 import { mkdir, readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { editProjectFilm, readProjectFilm } from './film.mjs';
 import { listFiles } from './files.mjs';
 import { writeAtomic } from './atomic.mjs';
 import { HttpError } from './http.mjs';
-import { applyOperations, readStoryboard, saveStoryboard } from './storyboard.mjs';
+import { applyOperations, handoffClips, matchStoryboard, readStoryboard, saveStoryboard } from './storyboard.mjs';
+import { filmCaptions, readSubtitleStyle, translateFilmSubtitles, writeSubtitleStyle } from './captions.mjs';
+import { setLine } from './transcripts.mjs';
+import { runGet, subtitleTranscriber, subtitleTranslator } from './get.mjs';
+import { readPrefs } from './prefs.mjs';
+import { listWorkspace, readWorkspaceFile, runWorkspaceCode, writeWorkspaceFile } from './agent-workspace.mjs';
 
 const MAX_OPERATIONS = 80;
 const undoFile = (/** @type {any} */ project) => join(project.path, '.film', 'agent-undo.json');
@@ -173,6 +178,157 @@ export async function editStoryboardTool(/** @type {any} */ project, /** @type {
   return { storyboard: saved, applied: operations.length };
 }
 
+/** Match every shot (or the named shots) through the semantic index and save the storyboard. */
+export async function matchStoryboardTool(
+  /** @type {any} */ project,
+  /** @type {any} */ semanticIndex,
+  /** @type {{ shotIds?: unknown, topK?: unknown }} */ input = {},
+  /** @type {((shot: any, fallback: string) => Promise<string>) | null} */ planQuery = null,
+) {
+  const current = readStoryboard(project);
+  const next = await matchStoryboard(current, project, semanticIndex, {
+    ...(Array.isArray(input.shotIds) ? { shotIds: input.shotIds.map(String).slice(0, 200) } : {}),
+    topK: Math.max(1, Math.min(40, Number(input.topK) || readPrefs().storyboard.candidateCount)),
+  }, planQuery);
+  const saved = await saveStoryboard(project, next, current.revision);
+  return { storyboard: saved, applied: 'match_storyboard' };
+}
+
+/**
+ * Fill one missing shot with the project's existing video-generation service. It is deliberately a
+ * separate tool: a normal match must never generate media as a side effect.
+ */
+export async function fillStoryboardTool(
+  /** @type {any} */ project,
+  /** @type {{ shotId?: unknown, prompt?: unknown, duration?: unknown }} */ input,
+) {
+  const current = readStoryboard(project);
+  const shot = current.shots.find((item) => item.id === String(input?.shotId));
+  if (!shot) throw new HttpError(404, 'no such shot');
+  if (shot.locked) throw new HttpError(409, 'that shot is locked');
+  const prompt = (typeof input?.prompt === 'string' && input.prompt.trim() ? input.prompt.trim() : [shot.visualIntent, shot.title].filter(Boolean).join('，')).slice(0, 1200);
+  if (!prompt) throw new HttpError(400, 'a visual prompt is required');
+  const seconds = Math.max(4, Math.min(30, Math.round((Number(input?.duration) || shot.targetMs / 1000 || 5))));
+  const before = new Set((await listFiles(project.path)).files.map((file) => file.path));
+  const out = `storyboard-fill-${shot.id.replace(/[^\w-]/g, '').slice(-12)}-${Date.now().toString(36)}`;
+  try {
+    await runGet(project.path, 'video', { out, prompt, duration: String(seconds), 'aspect-ratio': '16:9' }, { yes: true });
+  } catch (error) {
+    throw new HttpError(409, error instanceof Error ? error.message : String(error));
+  }
+  const after = (await listFiles(project.path)).files;
+  const made = after.find((file) => !before.has(file.path) && /\.(mp4|m4v|mov|webm|mkv)$/i.test(file.path));
+  if (!made) throw new HttpError(502, 'the generation service returned no video file');
+  const candidate = {
+    id: `candidate_generated_${Date.now().toString(36)}`,
+    libraryId: project.id,
+    libraryName: 'Generated',
+    assetId: made.path,
+    path: made.path,
+    name: basename(made.path),
+    kind: 'video',
+    startMs: 0,
+    endMs: Math.max(1000, seconds * 1000),
+    score: 1,
+    thumbUrl: '',
+    origin: /** @type {'generated'} */ ('generated'),
+  };
+  shot.generated = true;
+  shot.match = {
+    state: 'matched',
+    candidates: [candidate, ...shot.match.candidates],
+    selectedId: candidate.id,
+    confidence: 100,
+    query: prompt,
+  };
+  current.updatedAt = Date.now();
+  const saved = await saveStoryboard(project, current, current.revision);
+  return { storyboard: saved, path: made.path, applied: 'fill_storyboard' };
+}
+
+/** Hand off matched shots into the native timeline, replacing the clips from the previous rough cut. */
+export async function handoffStoryboardTool(/** @type {any} */ project) {
+  const current = readStoryboard(project);
+  const { clips, gaps } = handoffClips(current);
+  if (!clips.length) throw new HttpError(409, 'no matched shot to make a rough cut from');
+  const film = await readProjectFilm(project.path);
+  const existing = (Array.isArray(film.doc?.tracks) ? film.doc.tracks : []).flatMap((/** @type {any} */ track) => (
+    (Array.isArray(track.clips) ? track.clips : []).map((/** @type {any} */ clip) => ({ op: 'remove', clip: String(clip.id) }))
+  ));
+  let cursor = 0;
+  const inserts = clips.map((clip, index) => {
+    const at = cursor;
+    cursor += Math.max(0, clip.durationMs) / 1000;
+    return {
+      op: 'insert',
+      at,
+      ...(index === 0 ? { newTrack: 0 } : { track: 0 }),
+      clip: {
+        src: clip.path,
+        time: [Math.max(0, clip.startMs) / 1000, Math.max(0, clip.endMs) / 1000],
+      },
+    };
+  });
+  await editTimelineTool(project, { ops: [...existing, ...inserts] });
+  const now = Date.now();
+  current.handedOffAt = now;
+  current.roughcut = { createdAt: now, durationMs: clips.reduce((sum, clip) => sum + clip.durationMs, 0), clips, gaps };
+  const saved = await saveStoryboard(project, current, current.revision);
+  return { storyboard: saved, clips, gaps };
+}
+
+/** Deterministic validation before handoff; it reports issues and never edits. */
+export function validateStoryboardTool(/** @type {any} */ project) {
+  const doc = readStoryboard(project);
+  return { ...qcReport(project, doc), storyboard: { revision: doc.revision, shots: doc.shots.length } };
+}
+
+/** Read the film's captions and the person's subtitle look. */
+export async function readCaptionsTool(/** @type {any} */ project) {
+  return {
+    captions: await filmCaptions(project.path),
+    style: await readSubtitleStyle(project.path),
+  };
+}
+
+/**
+ * Caption edits share the subtitle routes' implementation. Transcribe/translate are explicit
+ * actions because they may spend provider credits; a line edit only changes one transcript line.
+ */
+export async function editCaptionsTool(/** @type {any} */ project, /** @type {any} */ input) {
+  const action = String(input?.action ?? '');
+  if (action === 'line') {
+    const src = String(input?.src ?? '');
+    const line = Number(input?.line);
+    const text = typeof input?.text === 'string' ? input.text : null;
+    if (!src || !Number.isFinite(line) || text == null) throw new HttpError(400, 'line needs src, line (ms) and text');
+    const ok = await setLine(project.path, src, line, text, typeof input?.language === 'string' ? input.language : undefined, Number.isInteger(input?.part) ? input.part : undefined);
+    if (!ok) throw new HttpError(404, 'that transcript line was not found');
+    return { ok: true, src, line, action };
+  }
+  if (action === 'style') {
+    if (!input?.style || typeof input.style !== 'object') throw new HttpError(400, 'style needs a subtitle style object');
+    return { style: await writeSubtitleStyle(project.path, input.style), action };
+  }
+  if (action === 'translate') {
+    const language = String(input?.language ?? '');
+    const translate = await subtitleTranslator(project.path);
+    if (!translate) throw new HttpError(409, '没有可用的字幕翻译服务，请先在设置中连接 provider。');
+    return { ...(await translateFilmSubtitles(project.path, language, { translate })), action };
+  }
+  if (action === 'transcribe') {
+    const captions = await filmCaptions(project.path);
+    if (!captions.untranscribed.length) return { transcribed: [], already: true, action };
+    const transcribe = await subtitleTranscriber();
+    for (const src of captions.untranscribed) {
+      // eslint-disable-next-line no-await-in-loop
+      await transcribe(project.path, src, new AbortController().signal);
+    }
+    return { transcribed: captions.untranscribed, action };
+  }
+  throw new HttpError(400, 'edit_captions action must be line, style, translate or transcribe');
+}
+
 /** Apply validated timeline operations. `editProjectFilm` keeps the file and its revision in charge. */
 export async function editTimelineTool(/** @type {any} */ project, /** @type {any} */ input) {
   const ops = normalizeFilmOps(input?.ops);
@@ -282,7 +438,7 @@ export async function searchMaterialsTool(/** @type {any} */ project, /** @type 
   };
 }
 
-/** MCP tool definitions. They intentionally stop short of render/export and audio generation. */
+/** MCP tool definitions. They intentionally stop short of render/export and audio generation; `fill_storyboard` is the one explicit video-generation action. */
 export const MCP_TOOL_DEFINITIONS = Object.freeze([
   {
     name: 'read_project',
@@ -305,6 +461,71 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'match_storyboard',
+    description: 'Search the project material index and select candidates for every shot, or for the named shotIds. Returns the saved storyboard summary and does not generate media.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shotIds: { type: 'array', items: { type: 'string' }, description: 'Optional shot ids; omit to match every shot.' },
+        topK: { type: 'number', description: '1–40 candidates per shot; default comes from Studio preferences.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'fill_storyboard',
+    description: 'Generate one missing shot with the project video-generation service and select it. This is an explicit media-generation action, not part of a normal match.',
+    inputSchema: {
+      type: 'object',
+      required: ['shotId'],
+      properties: {
+        shotId: { type: 'string' },
+        prompt: { type: 'string' },
+        duration: { type: 'number', description: 'Seconds; clamped to 4–30.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'handoff_storyboard',
+    description: 'Replace the native timeline clips with the matched storyboard shots and mark the board handed off. The person still previews and exports it.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'validate_storyboard',
+    description: 'Run deterministic storyboard/timeline validation and return issues. It never edits.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'workspace_list',
+    description: 'List the shared project agent workspace. Paths are relative to the workspace root.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' } }, additionalProperties: false },
+  },
+  {
+    name: 'workspace_read',
+    description: 'Read a UTF-8 text file from the shared project agent workspace.',
+    inputSchema: { type: 'object', required: ['path'], properties: { path: { type: 'string' } }, additionalProperties: false },
+  },
+  {
+    name: 'workspace_write',
+    description: 'Write a UTF-8 text file into the shared project agent workspace. Parent folders are made inside it.',
+    inputSchema: { type: 'object', required: ['path', 'content'], properties: { path: { type: 'string' }, content: { type: 'string' } }, additionalProperties: false },
+  },
+  {
+    name: 'run_code',
+    description: 'Run a small Node.js or Python program in the shared project agent workspace. No shell; 10s default timeout and 64KB output cap.',
+    inputSchema: {
+      type: 'object',
+      required: ['language', 'code'],
+      properties: {
+        language: { type: 'string', enum: ['node', 'python'] },
+        code: { type: 'string' },
+        timeoutMs: { type: 'number' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'edit_storyboard',
     description: 'Apply storyboard operations by shot/candidate id. Allowed types: setTargetDuration, distributeDurations, setShotDuration, updateShot, deleteShot, duplicateShot, reorderShots, moveShot, addShot, addScene, updateScene, setMatch, clearMatch, rematchShots, lockShots, setBrief. Locked shots cannot be changed. Use read_storyboard first.',
     inputSchema: {
@@ -312,7 +533,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
       required: ['operations'],
       properties: {
         baseRevision: { type: 'number', description: 'The revision read before this edit; a newer revision returns a conflict.' },
-        operations: { type: 'array', items: { type: 'object' }, description: 'Storyboard operations, each with a type. The conversation agent contract lists the allowed types.' },
+        operations: { type: 'array', items: { type: 'object' }, description: 'Storyboard operations, each with a type (or the common alias op). The conversation agent contract lists the allowed types.' },
       },
       additionalProperties: false,
     },

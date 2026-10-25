@@ -242,22 +242,42 @@ export interface StoryboardProposal {
   baseRevision: number;
   source: 'local' | 'ai';
 }
-export interface StoryboardChatResponse {
-  reply: string;
-  operations: Array<Record<string, unknown>>;
-  proposal: StoryboardProposal;
-  intent?: string;
+export interface AgentToolCall {
+  id: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+  status: 'done' | 'error' | 'running';
+  summary?: string;
+  error?: string;
+  startedAt?: number;
+  finishedAt?: number;
+  /** Frames, media probes and QC rows, when the backend sends a structured result. */
+  result?: unknown;
 }
-/** The one conversation endpoint. Storyboard turns carry operations/proposal; edit turns may apply filmOps. */
+/** The browser conversation's scopes: each stage's own agent and memory. */
+export type AgentChatScope = 'storyboard' | 'edit' | 'audio';
+
+/** The one conversation endpoint. Legacy operations/proposal remain for old responses. */
 export interface AgentChatResponse {
   reply: string;
+  runId?: string;
+  status?: 'done' | 'needs_input' | 'budget' | 'error';
+  toolCalls?: AgentToolCall[];
+  changed?: { storyboard?: boolean; timeline?: boolean; shots?: number; clips?: number; revision?: number | string; rev?: string | number; audio?: boolean; assets?: number; captions?: boolean; captionLines?: number; workspace?: boolean; workspaceFiles?: number; [key: string]: unknown };
+  issues?: string[];
+  question?: string;
+  questionOptions?: string[];
   operations?: Array<Record<string, unknown>>;
   proposal?: StoryboardProposal;
   intent?: string;
   applied?: boolean;
-  rev?: string;
+  rev?: string | number;
   timeline?: unknown;
   preview_request?: unknown;
+}
+export interface StoryboardChatResponse extends AgentChatResponse {
+  operations?: Array<Record<string, unknown>>;
+  proposal?: StoryboardProposal;
 }
 export interface AgentChatMessage { id: string; role: 'user' | 'agent'; text: string; at: number }
 export interface ModelLogEntry {
@@ -278,8 +298,18 @@ export interface ModelLogEntry {
 export interface PipelineStep {
   id: string; label: string; state: 'idle' | 'running' | 'done' | 'skipped' | 'error'; detail?: string; startedAt?: number; finishedAt?: number;
 }
+export type PlanRole = 'storyboard' | 'material' | 'edit' | 'audio' | 'qc';
+export interface PlanStep extends PipelineStep {
+  role: PlanRole; action: string; dependsOn: string[]; attempts: number;
+}
+export interface AgentPlan {
+  version: 1; id: string; goal: string; source: 'default' | 'model' | 'retry'; planner: 'model' | 'fallback';
+  state: 'idle' | 'running' | 'done' | 'error' | 'cancelled' | 'skipped'; replans: number;
+  steps: PlanStep[]; error?: string; createdAt: number; updatedAt: number;
+}
 export interface PipelineRun {
   id: string; state: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; step: string; steps: PipelineStep[];
+  plan: AgentPlan | null;
   startedAt: number | null; updatedAt: number; finishedAt: number | null; error: string; cancelRequested: boolean;
   storyboardRevision: number | null; applied: string[]; issues: string[];
 }
@@ -466,7 +496,7 @@ export interface ProviderCatalogEntry {
 }
 export interface ProviderCardsResponse { state: ProviderStateView; catalog: ProviderCatalogEntry[]; categories: ProviderCategoryInfo[] }
 export interface ProviderTestResult { ok: boolean; elapsedMs: number; detail: string }
-export interface AgentRoleInfo { id: 'storyboard' | 'material' | 'edit' | 'audio' | 'qc' | 'conversation'; label: string; hint: string }
+export interface AgentRoleInfo { id: 'planner' | 'storyboard' | 'material' | 'edit' | 'audio' | 'qc' | 'conversation'; label: string; hint: string }
 export interface AgentCard {
   id: string; name: string; role: AgentRoleInfo['id'] | ''; description: string; enabled: boolean; order: number;
   cardId: string; modelId: string; systemPrompt: string; temperature: number; maxTokens: number; topP: number; tools: string[];
@@ -563,12 +593,14 @@ export const api = {
     `${p(id)}/audio/import`, { method: 'POST', json: body },
   ),
   /** The connected provider's voices, as `openfilm get voice` lists them. */
-  audioVoices: (id: string, how: { q?: string; language?: string; gender?: string; limit?: number } = {}) => call<AudioVoicesResponse>(
+  audioVoices: (id: string, how: { q?: string; language?: string; gender?: string; limit?: number; via?: string; model?: string } = {}) => call<AudioVoicesResponse>(
     `${p(id)}/audio/voices?${new URLSearchParams({
       ...(how.q ? { q: how.q } : {}),
       ...(how.language ? { language: how.language } : {}),
       ...(how.gender ? { gender: how.gender } : {}),
       ...(how.limit ? { limit: String(how.limit) } : {}),
+      ...(how.via ? { via: how.via } : {}),
+      ...(how.model ? { model: how.model } : {}),
     })}`,
   ),
   /** A voice-over read, a score or an effect made through `openfilm get`; the file is the project's once it answers. */
@@ -583,10 +615,13 @@ export const api = {
   audioOps: (id: string, base: string | null, ops: Op[]) => call<AudioEditResponse>(`${p(id)}/audio/ops`, { method: 'POST', json: { base, ops } }),
   files: (id: string) => call<Listing>(`${p(id)}/files`),
   /** the one conversation endpoint: storyboard operations or applied timeline edits, by scope */
-  agentChat: (id: string, body: { text: string; scope?: 'storyboard' | 'edit'; selectedIds?: string[]; selectedClipIds?: string[] }) => call<AgentChatResponse>(`${p(id)}/agent/chat`, { method: 'POST', json: body }),
+  agentChat: (id: string, body: { text: string; scope?: AgentChatScope; selectedIds?: string[]; selectedClipIds?: string[]; signal?: AbortSignal }) => {
+    const { signal, ...json } = body;
+    return call<AgentChatResponse>(`${p(id)}/agent/chat`, { method: 'POST', json, signal });
+  },
   /** the browser conversation's stored messages, per scope */
-  agentChatHistory: (id: string, scope: 'storyboard' | 'edit') => call<{ messages: AgentChatMessage[] }>(`${p(id)}/agent/chat?scope=${scope}`).then((r) => r.messages),
-  clearAgentChat: (id: string, scope: 'storyboard' | 'edit') => call<{ messages: AgentChatMessage[] }>(`${p(id)}/agent/chat?scope=${scope}`, { method: 'DELETE' }),
+  agentChatHistory: (id: string, scope: AgentChatScope) => call<{ messages: AgentChatMessage[] }>(`${p(id)}/agent/chat?scope=${scope}`).then((r) => r.messages),
+  clearAgentChat: (id: string, scope: AgentChatScope) => call<{ messages: AgentChatMessage[] }>(`${p(id)}/agent/chat?scope=${scope}`, { method: 'DELETE' }),
   assetDescriptions: (id: string) => call<{ descriptions: Record<string, string> }>(`${p(id)}/asset-descriptions`).then((r) => r.descriptions),
   describeAsset: (id: string, path: string, regenerate = false) => call<{ desc: string }>(`${p(id)}/asset-descriptions`, { method: 'POST', json: { path, regenerate } }).then((r) => r.desc),
   /** the editor's settings of the project (`.film/settings.json`): its frame rate, its tracks' names */
@@ -659,9 +694,12 @@ export const api = {
   /** the developer's floating model-call log */
   modelLogs: (limit = 200) => call<{ entries: ModelLogEntry[] }>(`model-logs?limit=${limit}`).then((r) => r.entries),
   clearModelLogs: () => call<object>('model-logs', { method: 'DELETE' }),
+  /** Raw HTTP request log, for the debug export's side of an agent run. */
+  apiLogs: (limit = 300) => call<{ entries: Array<Record<string, unknown>> }>(`api-logs?limit=${limit}`).then((r) => r.entries),
   storyboardRun: (id: string) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run`).then((r) => r.run),
-  startStoryboardRun: (id: string, body: { text?: string; prompt?: string; brief?: Partial<StoryboardBrief> }) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run`, { method: 'POST', json: body }).then((r) => r.run),
+  startStoryboardRun: (id: string, body: { text?: string; prompt?: string; brief?: Partial<StoryboardBrief>; handoff?: boolean }) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run`, { method: 'POST', json: body }).then((r) => r.run),
   cancelStoryboardRun: (id: string) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run/cancel`, { method: 'POST', json: {} }).then((r) => r.run),
+  retryStoryboardRun: (id: string) => call<{ run: PipelineRun }>(`${p(id)}/storyboard/run/retry`, { method: 'POST', json: {} }).then((r) => r.run),
   undoStoryboardRun: (id: string) => call<{ storyboard: StoryboardDocument }>(`${p(id)}/storyboard/run/undo`, { method: 'POST', json: {} }).then((r) => r.storyboard),
   /** providers → models → agents for the film's unified storyboard/edit work slots */
   /** the unified provider cards: card catalog, redacted state, save/order/defaults, connection test */

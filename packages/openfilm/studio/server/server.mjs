@@ -62,15 +62,18 @@ import { doctor } from '../../src/doctor.mjs';
 import { recentProblems } from '../../src/problems.mjs';
 import { exportDiagnostics } from './diagnostics.mjs';
 import { SemanticIndexService } from './semantic-index.mjs';
-import { applyOperations, distributeDurations, handoffClips, localProposal, matchStoryboard, normalizeStoryboard, readStoryboard, saveStoryboard, scaleDuration } from './storyboard.mjs';
+import { applyOperations, distributeDurations, handoffClips, localProposal, normalizeStoryboard, readStoryboard, saveStoryboard, scaleDuration } from './storyboard.mjs';
 import { agentReady, callAgent, parseJsonReply, storyboardSchemaHint, testConnection } from './agent-runtime.mjs';
 import { readProviderState, redactState, saveProviderState, CATALOG, CATEGORIES, cardConnection, syncLegacyRuntime } from './provider-cards.mjs';
 import { readAgentState, saveAgentState, AGENT_ROLES, defaultPrompts } from './agent-cards.mjs';
-import { applyFilmOps, conversationTurn, editContext, storyboardContext } from './agent-flow.mjs';
+import { editContext, storyboardContext } from './agent-flow.mjs';
+import { conversationReact } from './agent-react.mjs';
+import { fillStoryboardTool, matchStoryboardTool } from './agent-tools.mjs';
 import { audioRoutes } from './audio.mjs';
 import { appendAgentChat, clearAgentChat, readAgentChat } from './agent-chat.mjs';
 import { handleMcpRequest } from './mcp.mjs';
-import { PIPELINE_STEPS, beginStep, clearUndo, emptyRun, failStep, finishStep, isCancelled, readRun, readUndo, skipStep, step, writeRun, writeUndo } from './pipeline.mjs';
+import { PIPELINE_STEPS, clearUndo, emptyRun, publicRun, readRun, readUndo, writeRun } from './pipeline.mjs';
+import { materialQueryPlanner, retryPlan, runPlan } from './plan-execute.mjs';
 import { clearApi, listApi, recordApi } from './api-log.mjs';
 import { clearModelCalls, listModelCalls } from './model-log.mjs';
 import { descriptionsFor, getDescription, saveDescription } from './asset-descriptions.mjs';
@@ -248,21 +251,6 @@ async function ensureAssetDescription(
   return desc;
 }
 
-/** The material agent's search words; failures fall back to the shot's own visual intent. */
-function pipelineQueryPlanner(/** @type {any} */ project) {
-  return async (/** @type {any} */ shot, /** @type {string} */ fallback) => {
-    const reply = await callAgent('material', [{
-      role: 'user',
-      content: `SHOT:\n${JSON.stringify({ title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, must: shot.must, avoid: shot.avoid, targetMs: shot.targetMs })}\n\nReturn only JSON: {"queries":["Chinese visual search query"]}.`,
-    }], { project });
-    const parsed = parseJsonReply(reply);
-    const queries = Array.isArray(parsed?.queries)
-      ? parsed.queries.filter((/** @type {unknown} */ item) => typeof item === 'string' && item.trim()).slice(0, 3)
-      : typeof parsed?.query === 'string' && parsed.query.trim() ? [parsed.query] : [];
-    return queries.length ? [...new Set([...queries, fallback])].join(' ').slice(0, 1200) : fallback;
-  };
-}
-
 /** Optional visual review of a shot's candidates; keeps every candidate and records the reason. */
 async function reviewShot(/** @type {any} */ project, /** @type {any} */ shot, /** @type {any} */ semanticIndex) {
   const candidates = (Array.isArray(shot.match?.candidates) ? shot.match.candidates : []).slice(0, 4);
@@ -305,137 +293,15 @@ async function reviewShot(/** @type {any} */ project, /** @type {any} */ shot, /
 }
 
 /**
- * The rough-cut pipeline: one AI pass from a script/brief to a reviewed, matched storyboard. It
- * stops before the timeline. The document is saved after every completed stage so a failure leaves
- * the person with the work that succeeded, and the run file says exactly where it stopped.
+ * The rough-cut pipeline's Plan-Execute entry point. The planner produces a validated plan, then
+ * the executor runs its steps through the same storyboard/film functions the UI and MCP use. The
+ * old fixed five stages still appear in `run.steps` for pages that have not adopted `run.plan`.
  */
 async function runRoughcutPipeline(/** @type {any} */ project, /** @type {any} */ input, /** @type {any} */ semanticIndex, /** @type {any} */ run) {
-  const check = async () => {
-    const latest = readRun(project);
-    if (latest.cancelRequested) run.cancelRequested = true;
-    return run.cancelRequested;
-  };
-  const mark = async () => { await writeRun(project, run); };
-  try {
-    run.state = 'running';
-    run.startedAt = Date.now();
-    run.finishedAt = null;
-    run.error = '';
-    run.applied = [];
-    run.issues = [];
-    run.steps = PIPELINE_STEPS.map((item) => ({ ...item, state: 'idle' }));
-    await mark();
-
-    /* 1. Always the storyboard Agent, even when a storyboard exists: conversion, repair and
-       semantic visual directions are model work, not a local format fallback. */
-    if (await check()) throw new Error('cancelled');
-    if (!agentReady('storyboard')) throw new HttpError(409, '没有可用的分镜 Agent。请先在设置中绑定分镜智能体的模型。');
-    beginStep(run, 'generate');
-    await mark();
-    const current = readStoryboard(project);
-    const existing = current.shots.length ? JSON.stringify({ title: current.title, brief: current.brief, scenes: current.scenes, shots: current.shots }).slice(0, 120_000) : '';
-    const result = await callAgent('storyboard', [{
-      role: 'user',
-      content: [
-        input.text ? `SCRIPT:\n${input.text}` : '',
-        input.prompt ? `IDEA:\n${input.prompt}` : '',
-        existing ? `EXISTING STORYBOARD (convert, repair or rewrite it into a shootable storyboard; keep its facts and any explicitly locked shots):\n${existing}` : '',
-        `BRIEF:\n${JSON.stringify(input.brief ?? {})}`,
-        `Return only JSON matching: ${storyboardSchemaHint()}. Give each shot a deliberately different targetMs (1-12s) according to its dramatic importance, action and line length; do not give every shot the same length. The sum should match the brief duration.`,
-      ].filter(Boolean).join('\n\n'),
-    }], { project });
-    const next = aiStoryboard(project, parseJsonReply(result), input.brief ?? {});
-    const generated = await saveStoryboard(project, next, current.revision);
-    run.storyboardRevision = generated.revision;
-    finishStep(run, 'generate', `${generated.shots.length} 个镜头`);
-    await mark();
-    if (await check()) throw new Error('cancelled');
-
-    /* 2. The material Agent plans words; the semantic index returns several candidates per shot. */
-    beginStep(run, 'query');
-    beginStep(run, 'match');
-    await mark();
-    const planning = agentReady('material') ? pipelineQueryPlanner(project) : null;
-    const matched = await matchStoryboard(generated, project, semanticIndex, { topK: readPrefs().storyboard.candidateCount }, planning);
-    const matchedSaved = await saveStoryboard(project, matched, generated.revision);
-    run.storyboardRevision = matchedSaved.revision;
-    finishStep(run, 'query', planning ? '由素材检索 Agent 生成查询' : '未启用检索 Agent，使用画面语义');
-    finishStep(run, 'match', `${matchedSaved.shots.filter((/** @type {any} */ shot) => shot.match.selectedId).length}/${matchedSaved.shots.length} 个镜头有候选`);
-    await mark();
-    if (await check()) throw new Error('cancelled');
-
-    /* 3. Automatic QC: visual review is optional; without a VL binding the semantic confidence
-       already adopted in matchStoryboard is kept. */
-    if (!agentReady('qc')) {
-      skipStep(run, 'verify', '未启用自动质检 Agent，保留检索置信度');
-    } else {
-      beginStep(run, 'verify');
-      await mark();
-      let reviewed = 0;
-      for (const shot of matchedSaved.shots) {
-        if (await check()) throw new Error('cancelled');
-        if (shot.locked || !shot.match.candidates.length) continue;
-        try { if (await reviewShot(project, shot, semanticIndex)) reviewed += 1; }
-        catch (error) { run.issues.push(`“${shot.title}”审核失败：${error instanceof Error ? error.message : String(error)}`); }
-      }
-      if (reviewed) {
-        run.storyboardRevision = (await saveStoryboard(project, matchedSaved, matchedSaved.revision)).revision;
-      }
-      finishStep(run, 'verify', reviewed ? `审核 ${reviewed} 个镜头` : '没有可审核的候选');
-    }
-    await mark();
-    if (await check()) throw new Error('cancelled');
-
-    /* 4. Edit assembly may apply safe structural edits; the previous document is kept for undo. */
-    if (!agentReady('edit')) {
-      skipStep(run, 'continuity', '未启用剪辑装配 Agent');
-    } else {
-      beginStep(run, 'continuity');
-      await mark();
-      const before = readStoryboard(project);
-      const reply = await callAgent('edit', [{
-        role: 'user',
-        content: `STORYBOARD:\n${JSON.stringify({ title: before.title, brief: before.brief, shots: before.shots.map((shot) => ({ id: shot.id, title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, targetMs: shot.targetMs, selectedId: shot.match.selectedId, confidence: shot.match.confidence })) })}.\n\nReturn only JSON: {"issues":["..."],"operations":[]}. Allowed operations: setTargetDuration {durationMs}, updateShot {shotId,patch}, reorderShots {shotIds}. Never touch a locked shot or invent media. Only propose changes that make the sequence more coherent.`,
-      }], { project });
-      const parsed = parseJsonReply(reply);
-      run.issues = [...run.issues, ...(Array.isArray(parsed?.issues) ? parsed.issues.map(String).slice(0, 80) : [])];
-      const operations = Array.isArray(parsed?.operations) ? parsed.operations : [];
-      const safe = operations.filter((/** @type {any} */ operation) => {
-        if (!operation || typeof operation !== 'object') return false;
-        if (operation.type === 'reorderShots' || operation.type === 'setTargetDuration') return true;
-        if (operation.type === 'updateShot') {
-          const keys = Object.keys(operation.patch ?? {});
-          return keys.length > 0 && keys.every((key) => key === 'targetMs' || key === 'title');
-        }
-        return false;
-      });
-      if (safe.length) {
-        const after = applyOperations(before, safe);
-        await writeUndo(project, before);
-        run.storyboardRevision = (await saveStoryboard(project, after, before.revision)).revision;
-        run.applied = safe.map((/** @type {any} */ operation) => operation.type);
-      }
-      finishStep(run, 'continuity', `${run.issues.length} 个问题 · ${run.applied.length} 个安全修改`);
-    }
-    if (await check()) throw new Error('cancelled');
-    run.state = 'done';
-    run.step = '';
-    run.finishedAt = Date.now();
-    await mark();
-  } catch (error) {
-    if (run.cancelRequested || error instanceof Error && error.message === 'cancelled') {
-      run.state = 'cancelled';
-      run.finishedAt = Date.now();
-      for (const item of run.steps) if (item.state === 'running') skipStep(run, item.id, '已取消');
-    } else {
-      run.state = 'error';
-      run.finishedAt = Date.now();
-      const message = error instanceof Error ? error.message : String(error);
-      run.error = message;
-      for (const item of run.steps) if (item.state === 'running') failStep(run, item.id, message);
-    }
-    await mark().catch(() => {});
-  }
+  return runPlan(project, input, semanticIndex, run, {
+    buildStoryboard: (raw, brief) => aiStoryboard(project, raw, brief),
+    reviewShot,
+  });
 }
 
 /**
@@ -554,8 +420,12 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       /* A page with the key in its address signs this browser in. A browser that opens the bare local
          address is the person at this machine: sign it in too, so typing 127.0.0.1:4848 works. The cookie
          stays HttpOnly + SameSite=Strict; API writes still must come from this origin. */
-      if (sameKey(url.searchParams.get('key'))) return sendEditor(res, editorDir, path, { 'set-cookie': signIn });
+      const suppliedKey = url.searchParams.get('key');
+      if (sameKey(suppliedKey)) return sendEditor(res, editorDir, path, { 'set-cookie': signIn });
       if (sameKey(cookieKey(req))) return sendEditor(res, editorDir, path);
+      /* A wrong key is still just the unauthenticated page; never let the loopback convenience
+         turn it into a signed-in browser. */
+      if (suppliedKey != null) return sendEditor(res, editorDir, path);
       const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '');
       return sendEditor(res, editorDir, path, loopback ? { 'set-cookie': signIn } : undefined);
     }
@@ -1109,15 +979,16 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       const base = typeof body.baseRevision === 'number' ? body.baseRevision : undefined;
       return json(res, 200, { storyboard: await saveStoryboard(project, body.storyboard, base) });
     }
-    if (rest === 'storyboard/run' && req.method === 'GET') return json(res, 200, { run: readRun(project) });
+    if (rest === 'storyboard/run' && req.method === 'GET') return json(res, 200, { run: publicRun(readRun(project)) });
     if (rest === 'storyboard/run' && req.method === 'POST') {
-      const body = /** @type {{ text?: unknown, prompt?: unknown, brief?: unknown }} */ (await readJson(req, 24 << 20) ?? {});
+      const body = /** @type {{ text?: unknown, prompt?: unknown, brief?: unknown, handoff?: unknown }} */ (await readJson(req, 24 << 20) ?? {});
       const existing = readRun(project);
       if (existing.state === 'running') throw new HttpError(409, '分镜流水线正在运行');
       const input = {
         text: typeof body.text === 'string' ? body.text.slice(0, 120_000) : '',
         prompt: typeof body.prompt === 'string' ? body.prompt.slice(0, 4000) : '',
         brief: body.brief && typeof body.brief === 'object' ? /** @type {any} */ (body.brief) : {},
+        ...(body.handoff === true ? { handoff: true } : {}),
       };
       if (!input.text.trim() && !input.prompt.trim() && !readStoryboard(project).shots.length) throw new HttpError(400, 'a script or a prompt is required');
       if (!agentReady('storyboard')) throw new HttpError(409, '没有可用的分镜 Agent。请先在设置中绑定分镜智能体的模型。');
@@ -1127,7 +998,7 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       run.steps = PIPELINE_STEPS.map((item) => ({ ...item, state: 'idle' }));
       await writeRun(project, run);
       void runRoughcutPipeline(project, input, semanticIndex, run);
-      return json(res, 200, { run });
+      return json(res, 200, { run: publicRun(run) });
     }
     if (rest === 'storyboard/run/cancel' && req.method === 'POST') {
       const run = readRun(project);
@@ -1135,7 +1006,22 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
         run.cancelRequested = true;
         await writeRun(project, run);
       }
-      return json(res, 200, { run });
+      return json(res, 200, { run: publicRun(run) });
+    }
+    if (rest === 'storyboard/run/retry' && req.method === 'POST') {
+      const run = readRun(project);
+      if (run.state === 'running') throw new HttpError(409, '分镜流水线正在运行');
+      if (!run.plan) throw new HttpError(409, '这次运行还没有可重试的计划');
+      run.cancelRequested = false;
+      run.state = 'running';
+      run.finishedAt = null;
+      run.error = '';
+      await writeRun(project, run);
+      void retryPlan(project, run, {
+        buildStoryboard: (raw, brief) => aiStoryboard(project, raw, brief),
+        reviewShot,
+      }, semanticIndex);
+      return json(res, 200, { run: publicRun(run) });
     }
     if (rest === 'storyboard/run/undo' && req.method === 'POST') {
       const previous = readUndo(project);
@@ -1173,75 +1059,24 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
     }
     if (rest === 'storyboard/match' && req.method === 'POST') {
       const body = /** @type {{ shotIds?: unknown, topK?: unknown }} */ (await readJson(req) ?? {});
-      const current = readStoryboard(project);
       /* The material agent is optional: when configured it rewrites a shot into search words, and any
          failure falls back inside matchStoryboard to the shot's own visual intent. */
-      const planQuery = agentReady('material')
-        ? async (/** @type {any} */ shot, /** @type {string} */ fallback) => {
-          const reply = await callAgent('material', [{
-            role: 'user',
-            content: `SHOT:\n${JSON.stringify({ title: shot.title, narration: shot.narration, visualIntent: shot.visualIntent, must: shot.must, avoid: shot.avoid, targetMs: shot.targetMs })}\n\nReturn only JSON: {"queries":["Chinese visual search query"]}.`,
-          }], { project });
-          const parsed = parseJsonReply(reply);
-          const queries = Array.isArray(parsed?.queries)
-            ? parsed.queries.filter((/** @type {unknown} */ item) => typeof item === 'string' && item.trim()).slice(0, 3)
-            : typeof parsed?.query === 'string' && parsed.query.trim() ? [parsed.query] : [];
-          return queries.length ? [...new Set([...queries, fallback])].join(' ').slice(0, 1200) : fallback;
-        }
-        : null;
-      const next = await matchStoryboard(current, project, semanticIndex, { ...body, topK: body.topK ?? readPrefs().storyboard.candidateCount }, planQuery);
-      return json(res, 200, { storyboard: await saveStoryboard(project, next, current.revision) });
+      const planQuery = agentReady('material') ? materialQueryPlanner(project) : null;
+      const saved = await matchStoryboardTool(project, semanticIndex, { ...body, topK: body.topK ?? readPrefs().storyboard.candidateCount }, planQuery);
+      return json(res, 200, { storyboard: saved.storyboard });
     }
     if (rest === 'storyboard/fill' && req.method === 'POST') {
       const body = /** @type {{ shotId?: unknown, prompt?: unknown, duration?: unknown }} */ (await readJson(req) ?? {});
-      const current = readStoryboard(project);
-      const shot = current.shots.find((item) => item.id === String(body.shotId));
-      if (!shot) throw new HttpError(404, 'no such shot');
-      if (shot.locked) throw new HttpError(409, 'that shot is locked');
-      const prompt = (typeof body.prompt === 'string' && body.prompt.trim() ? body.prompt.trim() : [shot.visualIntent, shot.title].filter(Boolean).join('，')).slice(0, 1200);
-      if (!prompt) throw new HttpError(400, 'a visual prompt is required');
-      const seconds = Math.max(4, Math.min(30, Math.round((Number(body.duration) || shot.targetMs / 1000 || 5))));
-      const before = new Set((await listFiles(project.path)).files.map((file) => file.path));
-      const out = `storyboard-fill-${shot.id.replace(/[^\w-]/g, '').slice(-12)}-${Date.now().toString(36)}`;
-      try {
-        await runGet(project.path, 'video', { out, prompt, duration: String(seconds), 'aspect-ratio': '16:9' }, { yes: true });
-      } catch (error) {
-        throw new HttpError(409, error instanceof Error ? error.message : String(error));
-      }
-      const after = (await listFiles(project.path)).files;
-      const made = after.find((file) => !before.has(file.path) && /\.(mp4|m4v|mov|webm|mkv)$/i.test(file.path));
-      if (!made) throw new HttpError(502, 'the generation service returned no video file');
-      const candidate = {
-        id: `candidate_generated_${Date.now().toString(36)}`,
-        libraryId: project.id,
-        libraryName: 'Generated',
-        assetId: made.path,
-        path: made.path,
-        name: basename(made.path),
-        kind: 'video',
-        startMs: 0,
-        endMs: Math.max(1000, seconds * 1000),
-        score: 1,
-        thumbUrl: '',
-        origin: /** @type {'generated'} */ ('generated'),
-      };
-      shot.generated = true;
-      shot.match = {
-        state: 'matched',
-        candidates: [candidate, ...shot.match.candidates],
-        selectedId: candidate.id,
-        confidence: 100,
-        query: prompt,
-      };
-      current.updatedAt = Date.now();
-      return json(res, 200, { storyboard: await saveStoryboard(project, current, current.revision), path: made.path });
+      const made = await fillStoryboardTool(project, body);
+      return json(res, 200, { storyboard: made.storyboard, path: made.path });
     }
+    const chatScope = (/** @type {unknown} */ value) => value === 'edit' ? /** @type {'edit'} */ ('edit') : value === 'audio' ? /** @type {'audio'} */ ('audio') : /** @type {'storyboard'} */ ('storyboard');
     if (rest === 'agent/chat' && req.method === 'GET') {
-      const scope = url.searchParams.get('scope') === 'edit' ? /** @type {'edit'} */ ('edit') : /** @type {'storyboard'} */ ('storyboard');
+      const scope = chatScope(url.searchParams.get('scope'));
       return json(res, 200, { messages: await readAgentChat(project, scope) });
     }
     if (rest === 'agent/chat' && req.method === 'DELETE') {
-      const scope = url.searchParams.get('scope') === 'edit' ? /** @type {'edit'} */ ('edit') : /** @type {'storyboard'} */ ('storyboard');
+      const scope = chatScope(url.searchParams.get('scope'));
       await clearAgentChat(project, scope);
       return json(res, 200, { messages: [] });
     }
@@ -1249,7 +1084,9 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       const body = /** @type {{ text?: unknown, selectedIds?: unknown, selectedClipIds?: unknown, scope?: unknown }} */ (await readJson(req) ?? {});
       const instruction = typeof body.text === 'string' ? body.text.trim() : '';
       if (!instruction) throw new HttpError(400, 'instruction is required');
-      const scope = body.scope === 'edit' ? /** @type {'edit'} */ ('edit') : /** @type {'storyboard'} */ ('storyboard');
+      const scope = chatScope(body.scope);
+      const chatAbort = new AbortController();
+      res.once('close', () => chatAbort.abort());
       /* The conversation remembers prior turns per scope. The current message is recorded even
          if the model fails, so switching stages never loses what the person typed. */
       const history = await readAgentChat(project, scope);
@@ -1257,22 +1094,39 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
       const recordReply = async (/** @type {string} */ reply) => {
         await appendAgentChat(project, scope, { role: 'agent', text: reply.slice(0, 20_000) });
       };
-      /* One conversation agent, two contexts. The edit stage applies validated timeline operations
-         immediately; the storyboard stage returns operations for the existing undoable apply step. */
+      /* Audio has its own agent and scope; its tools read the sound library and write the same
+         native timeline as the edit stage. */
+      if (scope === 'audio') {
+        const film = await readProjectFilm(project.path);
+        const listing = await listFiles(project.path);
+        const selectedClipIds = Array.isArray(body.selectedClipIds) ? body.selectedClipIds.map(String).slice(0, 200) : [];
+        const turn = await conversationReact(project, {
+          text: instruction,
+          scope: 'audio',
+          history,
+          selectedIds: selectedClipIds,
+          context: editContext(film, selectedClipIds, listing),
+          signal: chatAbort.signal,
+        }, semanticIndex);
+        await recordReply([turn.reply, turn.question].filter(Boolean).join('\n\n'));
+        return json(res, 200, turn);
+      }
+      /* The edit stage applies validated timeline operations immediately; the storyboard stage
+         writes through its own tools. */
       if (scope === 'edit') {
         const film = await readProjectFilm(project.path);
         const listing = await listFiles(project.path);
         const selectedClipIds = Array.isArray(body.selectedClipIds) ? body.selectedClipIds.map(String).slice(0, 200) : [];
-        const turn = await conversationTurn(project, { text: instruction, scope, history, context: editContext(film, selectedClipIds, listing) });
-        const applied = await applyFilmOps(project, turn.filmOps);
-        await recordReply(turn.reply);
-        return json(res, 200, {
-          reply: turn.reply,
-          applied: Boolean(applied),
-          ...(applied ? { rev: applied.rev, timeline: applied.timeline } : {}),
-          ...(turn.intent ? { intent: turn.intent } : {}),
-          ...(turn.preview_request != null ? { preview_request: turn.preview_request } : {}),
-        });
+        const turn = await conversationReact(project, {
+          text: instruction,
+          scope: 'edit',
+          history,
+          selectedIds: selectedClipIds,
+          context: editContext(film, selectedClipIds, listing),
+          signal: chatAbort.signal,
+        }, semanticIndex);
+        await recordReply([turn.reply, turn.question].filter(Boolean).join('\n\n'));
+        return json(res, 200, turn);
       }
       const current = readStoryboard(project);
       const selected = Array.isArray(body.selectedIds) ? body.selectedIds.map(String) : [];
@@ -1316,18 +1170,18 @@ export async function startStudio({ port = 4747, key, openBrowser = systemBrowse
           ...(quick.intent ? { intent: quick.intent } : {}),
         });
       }
-      if (agentReady('conversation')) {
+      if (agentReady('storyboard')) {
         const context = storyboardContext(current, selected, knownDescriptions);
-        const turn = await conversationTurn(project, { text: instruction, scope: 'storyboard', history, context });
-        /* Validate before returning: the UI's apply step must never receive an edit that would fail. */
-        applyOperations(current, turn.operations);
-        await recordReply(turn.reply);
-        return json(res, 200, {
-          reply: turn.reply,
-          operations: turn.operations,
-          ...(turn.intent ? { intent: turn.intent } : {}),
-          proposal: { id: `proposal_${Date.now().toString(36)}`, baseRevision: current.revision, source: 'ai' },
-        });
+        const turn = await conversationReact(project, {
+          text: instruction,
+          scope: 'storyboard',
+          history,
+          selectedIds: selected,
+          context,
+          signal: chatAbort.signal,
+        }, semanticIndex);
+        await recordReply([turn.reply, turn.question].filter(Boolean).join('\n\n'));
+        return json(res, 200, turn);
       }
       const local = localProposal(current, instruction);
       await recordReply(local.reply);

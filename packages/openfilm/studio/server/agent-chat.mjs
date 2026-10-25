@@ -17,7 +17,7 @@ const MAX_MESSAGES = 80;
 const MAX_TEXT = 20_000;
 /** Older builds answered with approval-gate refusals; they are not part of this conversation any more. */
 const LEGACY_GATE = /审批门|分镜审批|必须回.*审批|不能直接执行|需要回到.*审批/;
-/** @typedef {'storyboard' | 'edit'} ChatScope */
+/** @typedef {'storyboard' | 'edit' | 'audio'} ChatScope */
 /** @typedef {{ id: string, role: 'user' | 'agent', text: string, at: number }} ChatMessage */
 
 const fileOf = (/** @type {{ path: string }} */ project) => join(project.path, '.film', FILE);
@@ -50,27 +50,29 @@ async function readAll(/** @type {{ path: string }} */ project) {
       version: 1,
       storyboard: normalizeMessages(raw?.storyboard),
       edit: normalizeMessages(raw?.edit),
+      audio: normalizeMessages(raw?.audio),
     };
   } catch {
-    return { version: 1, storyboard: [], edit: [] };
+    return { version: 1, storyboard: [], edit: [], audio: [] };
   }
 }
 
 /** @param {{ path: string }} project @param {ChatScope} scope @returns {Promise<ChatMessage[]>} */
 export async function readAgentChat(project, scope) {
   const all = await readAll(project);
-  return scope === 'edit' ? all.edit : all.storyboard;
+  return scope === 'audio' ? all.audio : scope === 'edit' ? all.edit : all.storyboard;
 }
 
 /** Append one message, keeping the file bounded. */
 export async function appendAgentChat(/** @type {{ path: string }} */ project, /** @type {ChatScope} */ scope, /** @type {{ role: 'user' | 'agent', text: string }} */ message) {
   const all = await readAll(project);
-  const list = scope === 'edit' ? all.edit : all.storyboard;
+  const list = scope === 'audio' ? all.audio : scope === 'edit' ? all.edit : all.storyboard;
   const normalized = normalizeMessages([...list, { ...message, id: `chat_${randomBytes(6).toString('hex')}`, at: Date.now() }]);
   const next = {
     version: 1,
-    storyboard: scope === 'edit' ? all.storyboard : normalized,
+    storyboard: scope === 'storyboard' ? normalized : all.storyboard,
     edit: scope === 'edit' ? normalized : all.edit,
+    audio: scope === 'audio' ? normalized : all.audio,
   };
   await mkdir(join(project.path, '.film'), { recursive: true });
   await writeAtomic(fileOf(project), `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
@@ -82,8 +84,9 @@ export async function clearAgentChat(/** @type {{ path: string }} */ project, /*
   const all = await readAll(project);
   const next = {
     version: 1,
-    storyboard: scope === 'edit' ? all.storyboard : [],
+    storyboard: scope === 'storyboard' ? [] : all.storyboard,
     edit: scope === 'edit' ? [] : all.edit,
+    audio: scope === 'audio' ? [] : all.audio,
   };
   await mkdir(join(project.path, '.film'), { recursive: true });
   await writeAtomic(fileOf(project), `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });

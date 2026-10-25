@@ -14,6 +14,9 @@ import { editTimelineTool, filmSummary } from './agent-tools.mjs';
 /** The contract appended to every storyboard conversation turn. */
 export const STORYBOARD_CONTRACT = `Return only JSON: {"reply":"short Chinese answer","operations":[],"intent":"edit|match|none"}.
 - operations are storyboard changes: setTargetDuration, distributeDurations, setShotDuration, updateShot, deleteShot, duplicateShot, reorderShots, moveShot, addShot, addScene, updateScene, setMatch, clearMatch, rematchShots, lockShots, setBrief.
+- Use the operation name in "type" (or "op"): {"type":"deleteShot","shotId":"sh_..."} or {"type":"setMatch","shotId":"sh_...","candidateId":"candidate_..."}.
+- updateShot may set state: "matched" (adopted/confirmed), "review", "gap" or "draft"; do not invent "confirmed" as a document state.
+- Every operation must name real ids from CONTEXT. The reply must describe exactly those operations; if operations is empty, never claim the storyboard changed.
 Never touch a locked shot or invent a media path. Do not edit the timeline; the storyboard is the only document for this turn. Put a clear executable edit in this answer when the request is clear; otherwise explain the blocker in reply.`;
 
 /** The contract for the edit stage: timeline only, no storyboard relation. */

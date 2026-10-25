@@ -2,10 +2,9 @@
 /**
  * Agent cards: the editable prompts, model bindings and sampling settings behind the film.
  *
- * One agent pipeline, with six work slots: storyboard, material, edit, audio, qc and
- * conversation. `audio` is reserved for the audio/subtitle stage and disabled by default until that
- * stage is implemented. A card with a work slot takes part in that step; at most one enabled card
- * owns a slot.
+ * One agent pipeline, with seven work slots: planner, storyboard, material, edit, audio, qc and
+ * conversation. `audio` serves the sound stage through its own scope and tools. A card with a work
+ * slot takes part in that step; at most one enabled card owns a slot.
  *
  * The prompts follow TEMP/AI剪辑Agent设计方案/Agent架构与提示词.md and are split into
  * 任务 / 要求 / 交付. Older files used director/query/verify/continuity; they are migrated in place
@@ -20,15 +19,16 @@ import { HttpError } from './http.mjs';
 import { writeAtomic } from './atomic.mjs';
 import { readProviderState } from './provider-cards.mjs';
 
-/** @typedef {'storyboard' | 'material' | 'edit' | 'audio' | 'qc' | 'conversation'} AgentRole */
+/** @typedef {'planner' | 'storyboard' | 'material' | 'edit' | 'audio' | 'qc' | 'conversation'} AgentRole */
 /** @typedef {{ id: string, name: string, role: AgentRole | '', description: string, enabled: boolean, order: number, cardId: string, modelId: string, systemPrompt: string, temperature: number, maxTokens: number, topP: number, tools: string[], skills: string[] }} AgentCard */
 /** @typedef {{ revision: number, promptVersion: number, agents: AgentCard[] }} AgentState */
 
 export const AGENT_ROLES = /** @type {const} */ ([
+  { id: 'planner', label: '计划编排', hint: '把目标拆成有依赖的计划，校验后交给专业 Agent 执行' },
   { id: 'storyboard', label: '分镜规划', hint: '解析输入、生成分镜、短词组查询与预检' },
   { id: 'material', label: '素材检索', hint: '预检/正式检索、过滤、候选与覆盖报告' },
   { id: 'edit', label: '剪辑装配', hint: '选片、时间线、EDL、转场与连续性' },
-  { id: 'audio', label: '音频字幕（预留）', hint: 'TTS、配乐、字幕与混音；当前未接入流水线' },
+  { id: 'audio', label: '音频字幕', hint: '对白、音乐、音效、字幕与混音；对话使用音频 Agent' },
   { id: 'qc', label: '自动质检', hint: '技术、编辑、合规与 Skill 一致性检查' },
   { id: 'conversation', label: '对话剪辑', hint: '自然语言意图，经 MCP 工具修改时间线' },
 ]);
@@ -51,6 +51,21 @@ const number = (value, fallback, min, max) => {
 };
 
 const DEFAULT_PROMPTS = /** @type {Record<AgentRole, string>} */ ({
+  planner: `## 任务
+你是计划编排 Agent。把用户的粗剪目标拆成可执行、可校验、有依赖的步骤，交给专业 Agent 执行；你不直接修改分镜或时间线。
+
+## 要求
+1. 先判断是否需要生成/转换分镜、检索、匹配、补镜、质检、连续性或交接时间线。
+2. 只使用允许的动作：generate_storyboard、plan_queries、match_storyboard、fill_storyboard、review_storyboard、validate_storyboard、continuity、handoff_storyboard。
+3. 每步写负责角色、依赖、输入和验收目标；步骤不超过 8 个，依赖必须指向计划内更早的步骤。
+4. 分镜为空时必须包含 generate_storyboard；同一写动作最多一次；handoff_storyboard 必须是最后一步。
+5. 不添加渲染、导出、发布、TTS、配乐、任意代码执行或网络工具。
+6. 计划失败时只重写剩余步骤，不重复已完成的写入。
+
+## 交付
+只返回 JSON：
+{"goal":"简短中文目标","steps":[{"id":"generate","role":"storyboard","action":"generate_storyboard","label":"生成/转换分镜","dependsOn":[],"input":{},"acceptance":[]}]}`,
+
   storyboard: `## 任务
 你是分镜 Agent。把用户输入变成可执行、可检索的分镜，不直接剪片。
 
@@ -97,19 +112,20 @@ const DEFAULT_PROMPTS = /** @type {Record<AgentRole, string>} */ ({
 {"issues":[],"operations":[],"filmOps":[],"timeline":{"tracks":[],"durationMs":0},"edl":{"cuts":[],"audio":[],"subtitles":[]},"selection_reasons":[],"risks":[]}`,
 
   audio: `## 任务
-你是音频字幕 Agent（预留角色）。根据 EDL、分镜旁白、用户字幕/提示词和 Skill，生成声音与字幕方案。
+你是音频字幕 Agent。理解对白、音乐、音效、响度、淡入淡出、静音/锁定音轨和片段位置，回答当前混音问题，并在请求明确时直接修改音频时间线。
 
 ## 要求
-1. 旁白用 TTS 生成，保留词级/句级时间；旁白过长时优先压缩文本或调整停顿，不随意砍画面。
-2. 配乐按情绪、节奏、时长推荐；没有合适曲目再生成；配乐必须 ducking，不能压过旁白。
-3. 字幕按 TTS 时间对齐；用户提供字幕时直接对齐；断句、行长、安全区、语言符合平台和字幕 Skill。
-4. 品牌名和术语按发音 Skill 处理；不直接改分镜结构。
-5. 当前 Agent 仍不接入 TTS、配乐或混音工具，只产出方案；音效界面和接口由独立后端提供，不改变本 Agent 的工具权限。
-6. 只返回可解析 JSON。
+1. 先读取当前混音和时间线；修改音频片段位置、音量、淡入淡出时只使用原生 edit_timeline，不建立第二套时间线。
+2. 旁白用 TTS 生成，保留词级/句级时间；旁白过长时优先压缩文本或调整停顿，不随意砍画面。
+3. 配乐按情绪、节奏、时长推荐；没有合适曲目再生成；配乐要避开对白，不能压过人声。
+4. 字幕按 TTS 时间对齐；用户提供字幕时直接对齐；断句、行长、安全区、语言符合平台和字幕 Skill。
+5. 品牌名和术语按发音 Skill 处理；不直接改分镜结构。
+6. 不静默生成昂贵素材或覆盖用户已有音轨；明确告诉用户是否已应用。
+7. 不渲染、不导出；只通过受控工具工作。
 
 ## 交付
-只返回 JSON：
-{"audio_plan":{"voice":"","segments":[],"music":[],"ducking":{}},"subtitle_plan":{"language":"","lines":[],"style":{}},"mix":{"master":0,"dialog":0,"music":0},"risks":[]}`,
+正常时按对话工具协议返回简短回复和必要工具调用；已完成时只返回 JSON：{"reply":"简短中文说明","tool":null,"intent":"edit|none"}`,
+
 
   qc: `## 任务
 你是质检 Agent。检查草稿或成片的技术、编辑、合规和 Skill 一致性，并给出可执行修复。
@@ -144,12 +160,13 @@ const DEFAULT_PROMPTS = /** @type {Record<AgentRole, string>} */ ({
 });
 
 const DEFAULTS = /** @type {AgentCard[]} */ ([
-  { id: 'agent_storyboard', name: '分镜规划', role: 'storyboard', description: '脚本/想法 → 可执行分镜与预检', enabled: true, order: 0, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.storyboard, temperature: 0.45, maxTokens: 6000, topP: 0.95, tools: [], skills: [] },
-  { id: 'agent_material', name: '素材检索', role: 'material', description: '镜头 → 检索条件、候选与覆盖', enabled: true, order: 1, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.material, temperature: 0.2, maxTokens: 2500, topP: 0.9, tools: ['web-search'], skills: [] },
-  { id: 'agent_edit', name: '剪辑装配', role: 'edit', description: '粗剪、连续性与可执行 EDL', enabled: true, order: 2, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.edit, temperature: 0.1, maxTokens: 3000, topP: 0.9, tools: [], skills: [] },
-  { id: 'agent_audio', name: '音频字幕（预留）', role: 'audio', description: 'TTS、配乐、字幕与混音；暂未接入', enabled: false, order: 3, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.audio, temperature: 0.2, maxTokens: 2500, topP: 0.9, tools: [], skills: [] },
-  { id: 'agent_qc', name: '自动质检', role: 'qc', description: '候选/成片 → 证据、修复与风险', enabled: true, order: 4, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.qc, temperature: 0, maxTokens: 1600, topP: 1, tools: [], skills: [] },
-  { id: 'agent_conversation', name: '对话剪辑', role: 'conversation', description: '自然语言 ↔ 受控时间线修改', enabled: true, order: 5, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.conversation, temperature: 0.2, maxTokens: 4000, topP: 0.9, tools: [], skills: [] },
+  { id: 'agent_planner', name: '计划编排', role: 'planner', description: '目标 → 有依赖的计划 → 专业 Agent 执行', enabled: true, order: 0, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.planner, temperature: 0.2, maxTokens: 3000, topP: 0.9, tools: [], skills: [] },
+  { id: 'agent_storyboard', name: '分镜规划', role: 'storyboard', description: '脚本/想法 → 可执行分镜与预检', enabled: true, order: 1, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.storyboard, temperature: 0.45, maxTokens: 6000, topP: 0.95, tools: [], skills: [] },
+  { id: 'agent_material', name: '素材检索', role: 'material', description: '镜头 → 检索条件、候选与覆盖', enabled: true, order: 2, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.material, temperature: 0.2, maxTokens: 2500, topP: 0.9, tools: ['web-search'], skills: [] },
+  { id: 'agent_edit', name: '剪辑装配', role: 'edit', description: '粗剪、连续性与可执行 EDL', enabled: true, order: 3, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.edit, temperature: 0.1, maxTokens: 3000, topP: 0.9, tools: [], skills: [] },
+  { id: 'agent_audio', name: '音频字幕', role: 'audio', description: '对白、配乐、音效、字幕与混音；对话使用音频 Agent', enabled: true, order: 4, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.audio, temperature: 0.2, maxTokens: 2500, topP: 0.9, tools: [], skills: [] },
+  { id: 'agent_qc', name: '自动质检', role: 'qc', description: '候选/成片 → 证据、修复与风险', enabled: true, order: 5, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.qc, temperature: 0, maxTokens: 1600, topP: 1, tools: [], skills: [] },
+  { id: 'agent_conversation', name: '对话剪辑', role: 'conversation', description: '自然语言 ↔ 受控时间线修改', enabled: true, order: 6, cardId: '', modelId: '', systemPrompt: DEFAULT_PROMPTS.conversation, temperature: 0.2, maxTokens: 4000, topP: 0.9, tools: [], skills: [] },
 ]);
 
 export function defaultPrompts() { return { ...DEFAULT_PROMPTS }; }
@@ -194,11 +211,31 @@ export function normalizeState(/** @type {unknown} */ input) {
       skills: Array.isArray(item.skills) ? [...new Set(item.skills.map((/** @type {unknown} */ skill) => text(skill, 80)).filter((/** @type {string} */ skill) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(skill)))].slice(0, 40) : [],
     });
   }).filter(Boolean));
-  /* v2 also introduces the reserved audio/subtitle slot: disabled, no pipeline use, but visible in
-     Settings so its task/requirements/delivery prompt can be reviewed. */
-  if (forcePrompts && !agents.some((agent) => agent.role === 'audio')) {
-    const audio = DEFAULTS.find((agent) => agent.role === 'audio');
-    if (audio) agents.push({ ...audio });
+  /* Audio is a real work slot now. Older files called it reserved and left it disabled; migrate that
+     default without overriding a card the person has deliberately renamed or paused. */
+  const audioDefault = DEFAULTS.find((agent) => agent.role === 'audio');
+  if (audioDefault) {
+    const audio = agents.find((agent) => agent.role === 'audio');
+    const conversation = agents.find((agent) => agent.role === 'conversation' && agent.enabled);
+    const inherited = { cardId: conversation?.cardId ?? '', modelId: conversation?.modelId ?? '' };
+    if (!audio) {
+      agents.push({ ...audioDefault, ...inherited });
+    } else if (/预留|暂未接入/.test(`${audio.name} ${audio.description}`) || /audio_plan/.test(audio.systemPrompt)) {
+      audio.name = audioDefault.name;
+      audio.description = audioDefault.description;
+      audio.systemPrompt = audioDefault.systemPrompt;
+      if (!audio.cardId && !audio.modelId) Object.assign(audio, inherited);
+      if (!seenRoles.has('audio')) {
+        audio.enabled = true;
+        seenRoles.add('audio');
+      }
+    }
+  }
+  /* The plan layer is a first-class role, but older files predate it. Add its card without
+     rewriting any existing custom prompt. */
+  if (!agents.some((agent) => agent.role === 'planner')) {
+    const planner = DEFAULTS.find((agent) => agent.role === 'planner');
+    if (planner) agents.unshift({ ...planner });
   }
   agents.sort((a, b) => a.order - b.order).forEach((agent, index) => { agent.order = index; });
   return /** @type {AgentState} */ ({ revision: Number(raw.revision) || 0, promptVersion: PROMPT_VERSION, agents });

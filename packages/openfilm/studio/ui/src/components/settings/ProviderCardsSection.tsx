@@ -8,7 +8,7 @@
  */
 import * as React from 'react';
 import {
-  Check, ExternalLink, FlaskConical, GripVertical, Loader2, Plus,
+  Check, ExternalLink, FlaskConical, GripVertical, KeyRound, Loader2, Plus,
   Server, Trash2, X,
 } from 'lucide-react';
 import {
@@ -16,7 +16,7 @@ import {
   type ProviderCategoryInfo, type ProviderConnectionView, type ProviderModel, type ProviderStateView,
 } from '@/api';
 import { ProviderMark } from './ProviderMark';
-import { SettingsButton, SettingsField, SettingsGroup, SettingsItem, SettingsNumberField, SettingsPage, SettingsSwitch, settingsError } from './ui';
+import { SettingsButton, SettingsField, SettingsGroup, SettingsItem, SettingsLinkButton, SettingsNumberField, SettingsPage, SettingsStatus, SettingsSwitch, settingsError } from './ui';
 import { SettingsSelect } from './SettingsSelect';
 import { useProviders } from '@/lib/providers';
 import { CustomServices } from './CustomServices';
@@ -254,11 +254,69 @@ export function ProviderCardsSection() {
 
       {!visible.length ? <SettingsItem title="没有符合条件的提供商" description="从模板添加，或切换云端/本地与类别筛选。" control={<SettingsButton onClick={() => setCatalogOpen(true)}><Plus size={14} />添加</SettingsButton>} /> : null}
 
+      <SearchKeys hook={legacy} />
       <CustomServices hook={legacy} />
 
       {catalogOpen ? <CatalogDialog catalog={catalog} categories={data.categories} scope={scope} onScope={setScope} onCategory={setCategory}
         category={category} onAdd={addCatalog} onClose={() => setCatalogOpen(false)} /> : null}
     </SettingsPage>
+  );
+}
+
+/** Freesound and Jamendo are search keys, not model providers: they live beside the cards, never in generation. */
+function SearchKeys({ hook }: { hook: ReturnType<typeof useProviders> }) {
+  const [keys, setKeys] = React.useState<Record<string, string>>({});
+  const providers = (hook.state?.providers ?? []).filter((provider) => provider.id === 'freesound' || provider.id === 'jamendo');
+  if (!providers.length) return null;
+  return (
+    <SettingsGroup title="音效搜索 Key" footnote="Freesound 与 Jamendo 只用于音效页的网络搜索，不会出现在 TTS、配乐或音效的模型选择里。">
+      {providers.map((provider) => {
+        const key = keys[provider.id] ?? '';
+        const busy = hook.busy === provider.id;
+        const connected = provider.source === 'file' ? provider.last4 : provider.source === 'env' ? provider.env : '';
+        return (
+          <SettingsItem
+            key={provider.id}
+            mark={<KeyRound size={16} />}
+            title={provider.name}
+            badge={connected ? <SettingsStatus tone="muted">{provider.source === 'env' ? `环境变量 ${provider.env}` : `•••• ${provider.last4}`}</SettingsStatus> : <SettingsStatus tone="muted">未连接</SettingsStatus>}
+            description={(
+              <>
+                用于音效页的“网络素材”搜索。
+                {provider.keysUrl ? <SettingsLinkButton href={provider.keysUrl} className="ml-1 inline-flex items-center gap-0.5 underline-offset-2 hover:underline">申请 Key <ExternalLink size={11} /></SettingsLinkButton> : null}
+              </>
+            )}
+            control={provider.source === 'file' ? (
+              <SettingsButton variant="quiet" disabled={busy} onClick={() => void hook.removeKey(provider.id)}>移除</SettingsButton>
+            ) : provider.envKey && provider.source !== 'env' ? (
+              <SettingsButton variant="quiet" disabled={busy} onClick={() => void hook.useEnvKey(provider.id)}>使用环境变量</SettingsButton>
+            ) : null}
+          >
+            <div className="flex max-w-[560px] items-center gap-2">
+              <SettingsField
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={key}
+                onChange={(event) => setKeys((current) => ({ ...current, [provider.id]: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' || !key.trim() || busy) return;
+                  event.preventDefault();
+                  void hook.saveKey(provider.id, key.trim()).then((saved) => { if (saved) setKeys((current) => ({ ...current, [provider.id]: '' })); });
+                }}
+                placeholder={provider.last4 ? '粘贴新 Key 以替换现有 Key' : '粘贴 API Key'}
+                className="min-w-0 flex-1 font-mono placeholder:font-sans"
+              />
+              <SettingsButton variant="primary" disabled={busy || !key.trim()}
+                onClick={() => void hook.saveKey(provider.id, key.trim()).then((saved) => { if (saved) setKeys((current) => ({ ...current, [provider.id]: '' })); })}>
+                {busy ? <Loader2 size={13} className="animate-spin" /> : '保存'}
+              </SettingsButton>
+            </div>
+            {hook.problem && hook.problemFor === provider.id ? <p className={`${settingsError} mt-1`} role="alert">{hook.problem}</p> : null}
+          </SettingsItem>
+        );
+      })}
+    </SettingsGroup>
   );
 }
 
@@ -351,12 +409,14 @@ function ProviderCardEditor({ card, state, onChange, onChangeConnection, onShare
       ) : null}
       <div className="mt-2">
         <div className="mb-1 flex items-center gap-2"><span className="text-[10.5px] text-[var(--text-faint)]">模型</span><span className="min-w-0 flex-1" /><button type="button" onClick={addModel} className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text)]">+ 添加模型</button></div>
+        <p className="mb-1 text-[9.5px] leading-relaxed text-[var(--text-faint)]">“窗口”是该模型的上下文 token 上限，用于对话面板显示占用；留空时只显示最近请求 tokens。</p>
         <div className="flex flex-col gap-1">
           {card.models.map((model, index) => (
-            <div key={`${model.id}-${index}`} className="grid gap-1 rounded-md bg-[var(--surface-2)] p-1.5 sm:grid-cols-[1fr_1fr_70px_auto]">
+            <div key={`${model.id}-${index}`} className="grid gap-1 rounded-md bg-[var(--surface-2)] p-1.5 sm:grid-cols-[1fr_1fr_70px_70px_auto]">
               <SettingsField value={model.id} onChange={(e) => updateModel(index, { id: e.target.value })} aria-label="模型 ID" placeholder="model id" className="h-7 font-mono text-[11px]" />
               <SettingsField value={model.name} onChange={(e) => updateModel(index, { name: e.target.value })} aria-label="模型名称" placeholder="显示名称" className="h-7 text-[11px]" />
               <SettingsNumberField allowEmpty value={model.dimension ?? null} onCommit={(value) => updateModel(index, { dimension: value ?? undefined })} aria-label="向量维度" placeholder="维度" className="h-7 text-[11px]" />
+              <SettingsNumberField allowEmpty value={model.context ?? null} onCommit={(value) => updateModel(index, { context: value ?? undefined })} aria-label="上下文窗口" placeholder="窗口" className="h-7 text-[11px]" />
               <div className="flex items-center gap-1">
                 <SettingsSwitch checked={Boolean(model.vision)} label="图片输入" onChange={(vision) => updateModel(index, { vision })} />
                 <button type="button" aria-label="移除模型" disabled={card.models.length <= 1} onClick={() => removeModel(index)} className="text-[var(--text-faint)] hover:text-[var(--err)] disabled:opacity-30"><Trash2 size={12} /></button>

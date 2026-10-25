@@ -20,6 +20,16 @@ import { useDismissExpanded } from './use-dismiss-expanded';
 
 const EMPTY_AGENTS: AgentCardsResponse['state'] = { revision: 0, promptVersion: 0, agents: [] };
 
+const TOOL_SUMMARY: Record<string, string> = {
+  planner: '读取项目/分镜/时间线/能力；生成计划；不写工程',
+  storyboard: '读取分镜/素材；编辑、匹配、补镜；不写时间线',
+  material: '读取镜头/字幕；检索、探测、匹配；不写时间线',
+  edit: '读取时间线/文件；写入时间线；不读分镜（交接后）',
+  audio: '读取混音/字幕；检索、生成 TTS/配乐/音效、分析并落轨；不渲染/导出',
+  qc: '读取分镜/时间线/媒体；质检；不写',
+  conversation: '读取项目/分镜/时间线；受控工具循环；不渲染/导出',
+};
+
 export function AgentCardsSection({ embedded = false, projectId = null }: { embedded?: boolean; projectId?: string | null }) {
   const [agents, setAgents] = React.useState<AgentCardsResponse | null>(null);
   const [providers, setProviders] = React.useState<ProviderStateView | null>(null);
@@ -192,6 +202,10 @@ export function AgentCardsSection({ embedded = false, projectId = null }: { embe
                     <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">Top P<SettingsNumberField step={0.05} min={0} max={1} value={agent.topP} onCommit={(value) => update(agent.id, { topP: value ?? 0.9 })} aria-label="Top P" /></label>
                     <label className="flex flex-col gap-1 text-[10.5px] text-[var(--text-faint)]">工具权限<SettingsSelect label="工具权限" value={agent.tools.includes('web-search') ? 'web-search' : ''} onChange={(/** @type {string} */ value) => update(agent.id, { tools: value ? ['web-search'] : [] })} options={[{ value: '', label: '无工具' }, { value: 'web-search', label: '允许网页搜索' }]} width={190} /></label>
                   </div>
+                  <p className="mt-2 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-[10px] leading-relaxed text-[var(--text-faint)]">
+                    后端受控工具：{TOOL_SUMMARY[agent.role] ?? '未分配工作槽'}。渲染、导出和发布不提供给 Agent。
+                    <br />每个 Agent 有独立的 `.film/agent-workspace/&lt;role&gt;` 工作区，可读写文本并运行 Node/Python 小脚本。
+                  </p>
                   <div className="mt-2">
                     <span className="text-[10.5px] text-[var(--text-faint)]">已挂载技能</span>
                     <div className="mt-1 flex min-h-[30px] flex-wrap items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-1.5">

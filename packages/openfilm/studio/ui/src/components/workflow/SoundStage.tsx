@@ -8,7 +8,7 @@
  */
 import * as React from 'react';
 import {
-  AudioLines, ChevronRight, FolderOpen, RefreshCw, Scissors,
+  AudioLines, Captions, ChevronRight, FolderOpen, RefreshCw, Scissors,
 } from 'lucide-react';
 import { api, ApiError, projectEvents } from '@/api';
 import type {
@@ -29,6 +29,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { ContextMenu, TEXT_FIELD, type ContextMenuEntry } from '../ContextMenu';
 import { DockPaneDivider, PaneDivider, usePaneSize } from '../PaneDivider';
 import { PANE_BAR, PANE_TITLE } from '../dock-pane-bar';
+import { EditChatPanel } from '../ai/EditChatPanel';
 import { SoundAudition } from './sound/SoundAudition';
 import { SoundInspector, emptyDraft, type PlaceDraft } from './sound/SoundInspector';
 import { SoundLibrary, type SoundForm, type SoundView } from './sound/SoundLibrary';
@@ -51,7 +52,7 @@ const unavailableCatalog = (message: string): AudioCatalog => ({
 
 export function SoundStage({
   projectId, durationMs, initialPosMs = 0, folder, stage, film, fps, onNext, onManageMedia, onImport, onDelete, onReveal,
-  onSettings, onEditOps, onUndo, onRedo, subtitleLines, notify, error,
+  onSettings, onEditOps, onUndo, onRedo, subtitleLines, notify, error, chatOpen = false, onCloseChat, onAgentSettings, onOpenSubtitles,
 }: {
   projectId: string;
   durationMs: number;
@@ -67,10 +68,17 @@ export function SoundStage({
   onDelete: (path: string) => Promise<MediaResult>;
   onReveal: (path: string) => void;
   onSettings?: () => void;
+  /** Settings → Agents, for the sound specialist's model and card. */
+  onAgentSettings?: () => void;
+  /** Open the shared subtitle inspector while staying in the sound step. */
+  onOpenSubtitles?: () => void;
   /** The editor's own edit path: the same native operations, the same undo history, the picture told at once. */
   onEditOps?: (ops: Op[], label: string) => Promise<string | null>;
   onUndo?: () => void;
   onRedo?: () => void;
+  /** The sound specialist's conversation, in the right pane. */
+  chatOpen?: boolean;
+  onCloseChat?: () => void;
   subtitleLines: readonly string[];
   notify: (message: string) => void;
   error: (message: string) => void;
@@ -105,6 +113,8 @@ export function SoundStage({
   const [voices, setVoices] = React.useState<AudioVoice[] | null>(null);
   const [voicesLoading, setVoicesLoading] = React.useState(false);
   const [voicesNote, setVoicesNote] = React.useState<string | null>(null);
+  /** The voice route the current list belongs to; a provider/model change asks that provider again. */
+  const voiceRoute = React.useRef<string | null>(null);
   const [peaks, setPeaks] = React.useState<number[] | null>(null);
   const [waveDurationMs, setWaveDurationMs] = React.useState<number | null>(null);
   const [peaksLoading, setPeaksLoading] = React.useState(false);
@@ -113,12 +123,25 @@ export function SoundStage({
   const [confirm, setConfirm] = React.useState<{ kind: 'asset'; asset: AudioAsset } | { kind: 'clip'; clip: AudioClip } | null>(null);
   const pictureRef = React.useRef<SoundPictureHandle | null>(null);
   const [picturePlaying, setPicturePlaying] = React.useState(false);
+  /** The audio agent card and its model: the panel says what is missing until both are set. */
+  const [audioAgentReady, setAudioAgentReady] = React.useState<boolean | null>(null);
+  React.useEffect(() => {
+    let live = true;
+    void Promise.all([api.agentCards(), api.providerCards()]).then(([agents, providers]) => {
+      if (!live) return;
+      const agent = agents.state.agents.find((item) => item.role === 'audio' && item.enabled);
+      const card = providers.state.cards.find((item) => item.id === agent?.cardId && item.enabled);
+      setAudioAgentReady(Boolean(agent && agent.modelId && card));
+    }).catch(() => { if (live) setAudioAgentReady(false); });
+    return () => { live = false; };
+  }, []);
 
   const rowRef = React.useRef<HTMLDivElement | null>(null);
   const bodyRef = React.useRef<HTMLDivElement | null>(null);
   const centerRef = React.useRef<HTMLDivElement | null>(null);
   const { width: libraryWidth, commit: commitLibraryWidth } = usePaneSize('openfilm.soundStage.libraryW', 300, 240);
   const { width: inspectorWidth, commit: commitInspectorWidth } = usePaneSize('openfilm.soundStage.inspectorW', 320, 268);
+  const { width: chatWidth, commit: commitChatWidth } = usePaneSize('openfilm.soundStage.chatW', 330, 280);
   const { width: tracksHeight, commit: commitTracksHeight } = usePaneSize('openfilm.soundStage.tracksH', 190, 112);
   const { width: auditionHeight, commit: commitAuditionHeight } = usePaneSize('openfilm.soundStage.auditionH', 210, 140);
   const [showPicture, setShowPicture] = React.useState(true);
@@ -137,7 +160,8 @@ export function SoundStage({
   }, []);
   const preferredLibrary = libraryWidth ?? 300;
   const preferredInspector = inspectorWidth ?? 320;
-  const sidesRoom = rowWidth ? Math.max(460, rowWidth - 300 - 12) : preferredLibrary + preferredInspector;
+  const chatShownWidth = chatOpen ? Math.max(280, chatWidth ?? 330) : 0;
+  const sidesRoom = rowWidth ? Math.max(460, rowWidth - 300 - 18 - chatShownWidth) : preferredLibrary + preferredInspector;
   const sidesShown = preferredLibrary + preferredInspector;
   const sidesScale = sidesShown > sidesRoom ? sidesRoom / sidesShown : 1;
   const libraryShownWidth = Math.max(220, Math.round(preferredLibrary * sidesScale));
@@ -638,7 +662,9 @@ export function SoundStage({
     setVoicesLoading(true);
     setVoicesNote(null);
     try {
-      const answer = await api.audioVoices(projectId, { limit: 50 });
+      const via = form.provider || undefined;
+      const model = via && form.model ? form.model : undefined;
+      const answer = await api.audioVoices(projectId, { limit: 50, ...(via ? { via } : {}), ...(model ? { model } : {}) });
       setVoices(answer.voices ?? []);
       if (!answer.voices?.length) setVoicesNote(answer.note ?? t('soundStage.generate.voicesEmpty'));
     } catch (e) {
@@ -648,6 +674,20 @@ export function SoundStage({
       setVoicesLoading(false);
     }
   };
+
+  /* Voices belong to the selected provider/model: changing it clears the old list and asks again. */
+  const voiceRouteKey = `${form.kind}|${form.provider}|${form.model}`;
+  React.useEffect(() => {
+    if (voiceRoute.current === null) { voiceRoute.current = voiceRouteKey; return; }
+    if (voiceRoute.current === voiceRouteKey) return;
+    voiceRoute.current = voiceRouteKey;
+    if (view !== 'generate' || form.kind !== 'voice') return;
+    setVoices(null);
+    setForm((now) => ({ ...now, voice: '' }));
+    void loadVoices();
+    // loadVoices reads the current form; this effect runs once per provider/model route.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceRouteKey, view, form.kind]);
 
   const generate = async () => {
     const kind = form.kind;
@@ -1014,6 +1054,11 @@ export function SoundStage({
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--text-faint)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text)]">
             <RefreshCw size={11} className={busy === 'refresh' || libraryLoading ? 'animate-spin' : ''} />
           </button>
+          {onOpenSubtitles ? (
+            <button type="button" onClick={onOpenSubtitles} className={SECONDARY} title="字幕与样式">
+              <Captions size={11} aria-hidden />字幕{subtitleLines.length ? ` ${subtitleLines.length}` : ''}
+            </button>
+          ) : null}
           {onManageMedia ? (
             <button type="button" onClick={onManageMedia} className={SECONDARY}>
               <FolderOpen size={11} aria-hidden />{t('soundStage.header.media')}
@@ -1107,6 +1152,24 @@ export function SoundStage({
               onClear={clearSelection}
             />
           </div>
+          {chatOpen ? (
+            <>
+              <PaneDivider width={chatShownWidth} onResize={commitChatWidth} containerRef={rowRef} side="end"
+                label={t('soundStage.header.resizeChat')} min={280} minRest={420} />
+              <div className="min-h-0 shrink-0" style={{ width: chatShownWidth }}>
+                <EditChatPanel
+                  projectId={projectId}
+                  scope="audio"
+                  title="AI 音效助手"
+                  welcome="我可以帮你检查对白、音乐与音效的平衡、响度和剪辑点，也能给出可执行的音频修改建议。"
+                  placeholder="例如：对白太轻、音乐压住了人声，帮我看看怎么调。"
+                  configured={audioAgentReady}
+                  onOpenSettings={onAgentSettings}
+                  onClose={() => onCloseChat?.()}
+                />
+              </div>
+            </>
+          ) : null}
         </div>
 
         <DockPaneDivider height={tracksHeight ?? 190} onResize={commitTracksHeight} containerRef={bodyRef}

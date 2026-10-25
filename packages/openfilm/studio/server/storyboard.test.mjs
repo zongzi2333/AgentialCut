@@ -50,6 +50,20 @@ test('storyboard operations validate locked shots and reorder every shot once', 
   assert.deepEqual(reordered.shots.map((shot) => shot.id), [b.id, a.id]);
 });
 
+test('model aliases op/state are applied: deleteShot and confirming the selected candidate', () => {
+  const doc = localStoryboard(project, { text: 'One.\nTwo.', brief: { durationMs: 8_000 } });
+  const [a, b] = doc.shots;
+  const deleted = applyOperations(doc, [{ op: 'deleteShot', shotId: a.id }]);
+  assert.deepEqual(deleted.shots.map((shot) => shot.id), [b.id]);
+  b.match = {
+    state: 'review',
+    candidates: [{ id: 'c1', libraryId: 'p', libraryName: 'P', assetId: 'a', path: 'a.mp4', name: 'a.mp4', kind: 'video', startMs: 0, endMs: 1000, score: 0.4, thumbUrl: '', origin: 'library' }],
+    selectedId: 'c1', confidence: 40,
+  };
+  const confirmed = applyOperations(doc, [{ op: 'updateShot', shotId: b.id, state: 'confirmed' }]);
+  assert.equal(confirmed.shots.find((shot) => shot.id === b.id)?.match.state, 'matched');
+});
+
 test('the displayed match confidence is the semantic score, even when a visual review exists', () => {
   const doc = normalizeStoryboard({
     title: 'Test',

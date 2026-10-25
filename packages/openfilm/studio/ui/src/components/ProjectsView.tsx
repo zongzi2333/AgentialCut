@@ -19,6 +19,7 @@ import { folderCounts, folderPosters, folderTrail, listStarts, parentOf, visible
 import { opensOnClick, posterRetryDelay, posterTry } from '@/lib/projects-page';
 import { ContextMenu } from './ContextMenu';
 import { ProjectMenu } from './ProjectMenu';
+import { exportProjectDebug } from '@/lib/debug-export';
 import { ProjectCoverContext } from './ProjectCover';
 import { Tooltip } from './Tooltip';
 
@@ -870,13 +871,14 @@ function ItemMenu({
   size,
 }: Pick<ItemProps, 'project' | 'onOpen' | 'onStartRename' | 'onStartSelect' | 'onMoveToFolder' | 'onLocate' | 'onDelete'> & { size: number }) {
   const cover = React.useContext(ProjectCoverContext);
-  if (project.missing) return <ProjectMenu onLocate={onLocate} onRemove={onDelete} size={size} />;
+  if (project.missing) return <ProjectMenu onLocate={onLocate} onRemove={onDelete} onDebugExport={() => void exportProjectDebug(project)} size={size} />;
   return (
     <ProjectMenu
       onOpen={onOpen}
       onRename={onStartRename}
       onSelect={onStartSelect}
       onMoveToFolder={onMoveToFolder}
+      onDebugExport={() => void exportProjectDebug(project)}
       onChangeCover={cover ? () => cover.change(project) : undefined}
       onRestoreCover={cover && project.cover ? () => cover.restore(project) : undefined}
       onReveal={() => void api.revealProject(project.id).catch(() => {})}

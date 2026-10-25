@@ -46,11 +46,13 @@ function safeMessage(/** @type {string} */ service, /** @type {string} */ key, /
   return body.split(key).join('???').slice(0, 600);
 }
 
-async function fetchJson(/** @type {string} */ service, /** @type {string} */ url, /** @type {RequestInit} */ init, /** @type {string} */ key, /** @type {number} */ timeoutMs = 120_000) {
+async function fetchJson(/** @type {string} */ service, /** @type {string} */ url, /** @type {RequestInit} */ init, /** @type {string} */ key, /** @type {number} */ timeoutMs = 120_000, /** @type {AbortSignal | undefined} */ signal = undefined) {
   let response;
   try {
-    response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
+    const timeout = AbortSignal.timeout(timeoutMs);
+    response = await fetch(url, { ...init, signal: signal ? AbortSignal.any([timeout, signal]) : timeout, redirect: 'error' });
   } catch (error) {
+    if (/** @type {Error} */ (error).name === 'AbortError') throw new HttpError(499, '请求已停止');
     if (/** @type {Error} */ (error).name === 'TimeoutError') throw new HttpError(504, `${service} 调用超时`);
     throw new HttpError(502, `${service} 连接失败：${error instanceof Error ? error.message : String(error)}`);
   }
@@ -91,7 +93,7 @@ async function callCardOnce(/** @type {ProviderCard} */ card, /** @type {Connect
       method: 'POST',
       headers: { ...headersFor(connection, key), 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({ model: model.remoteName || model.id, max_tokens: maxTokens, temperature, top_p: topP, ...(system ? { system } : {}), messages: messages.filter((message) => message.role !== 'system') }),
-    }, key, timeout);
+    }, key, timeout, options.signal);
     const content = Array.isArray(body?.content) ? body.content.map((/** @type {any} */ part) => part?.text ?? '').join('') : body?.content;
     if (typeof content !== 'string' || !content.trim()) throw new HttpError(502, '模型没有返回内容');
     return { content, usage: usageOf(body) };
@@ -106,7 +108,7 @@ async function callCardOnce(/** @type {ProviderCard} */ card, /** @type {Connect
         contents: messages.filter((message) => message.role !== 'system').map((message) => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content) }] })),
         generationConfig: { temperature, maxOutputTokens: maxTokens, topP },
       }),
-    }, key, timeout);
+    }, key, timeout, options.signal);
     const content = body?.candidates?.[0]?.content?.parts?.map((/** @type {any} */ part) => part?.text ?? '').join('');
     if (typeof content !== 'string' || !content.trim()) throw new HttpError(502, '模型没有返回内容');
     return { content, usage: usageOf(body) };
@@ -117,7 +119,7 @@ async function callCardOnce(/** @type {ProviderCard} */ card, /** @type {Connect
       method: 'POST',
       headers: headersFor(connection, key),
       body: JSON.stringify({ model: model.remoteName || model.id, input: normalized, temperature, max_output_tokens: maxTokens, ...(card.category === 'web-search' ? { tools: [{ type: 'web_search_preview' }] } : {}) }),
-    }, key, timeout);
+    }, key, timeout, options.signal);
     const content = body?.output_text ?? body?.output?.flatMap((/** @type {any} */ item) => item?.content ?? []).map((/** @type {any} */ part) => part?.text ?? '').join('');
     if (typeof content !== 'string' || !content.trim()) throw new HttpError(502, '模型没有返回内容');
     return { content, usage: usageOf(body) };
@@ -138,7 +140,7 @@ async function callCardOnce(/** @type {ProviderCard} */ card, /** @type {Connect
       ...(card.options?.extraBody && typeof card.options.extraBody === 'object' ? card.options.extraBody : {}),
       ...(card.protocol === 'openai-chat-search' ? { enable_search: true } : {}),
     }),
-  }, key, timeout);
+  }, key, timeout, options.signal);
   const content = body?.choices?.[0]?.message?.content ?? body?.choices?.[0]?.text ?? body?.message?.content;
   if (typeof content !== 'string' || !content.trim()) throw new HttpError(502, '模型没有返回内容');
   return { content, usage: usageOf(body) };
@@ -214,7 +216,7 @@ export function agentPrompt(/** @type {string} */ role) {
 export async function callAgent(
   /** @type {string} */ role,
   /** @type {ChatMessage[]} */ messages,
-  /** @type {{ project?: { path: string } | null }} */ context = {},
+  /** @type {{ project?: { path: string } | null, appendSystem?: string, signal?: AbortSignal }} */ context = {},
 ) {
   const agent = agentFor(/** @type {any} */ (role));
   if (!agent) throw new HttpError(409, '这一步没有启用的智能体');
@@ -234,11 +236,13 @@ export async function callAgent(
   if (mounted.length) {
     systemPrompt = `${systemPrompt}\n\n<agent_skills>\nThese skills are mounted on you. Read and follow them when they fit the work.\n${mounted.join('\n\n')}\n</agent_skills>`;
   }
+  if (context.appendSystem?.trim()) systemPrompt = `${systemPrompt}\n\n${context.appendSystem.trim()}`;
   return callCard(target.card, connection, target.model, messages, {
     systemPrompt,
     temperature: agent.temperature,
     maxTokens: agent.maxTokens,
     topP: agent.topP,
+    ...(context.signal ? { signal: context.signal } : {}),
     log: { role, agent: agent.name },
   });
 }

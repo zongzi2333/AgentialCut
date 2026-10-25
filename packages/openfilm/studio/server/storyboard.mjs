@@ -364,7 +364,7 @@ export function applyOperations(/** @type {Storyboard} */ doc, /** @type {unknow
     const op = /** @type {Record<string, any>} */ (raw);
     /* Models often drop `type`, or use a natural name. Accept the common shapes so one missing key
        does not throw away an otherwise useful edit; the whole proposal is still validated first. */
-    const rawType = String(op.type ?? op.operation ?? op.action ?? '').trim();
+    const rawType = String(op.type ?? op.op ?? op.operation ?? op.action ?? '').trim();
     const type = ({
       setshotduration: 'setShotDuration', setduration: 'setShotDuration', setshotlength: 'setShotDuration',
       updateduration: 'setShotDuration', duration: 'setShotDuration',
@@ -423,6 +423,10 @@ export function applyOperations(/** @type {Storyboard} */ doc, /** @type {unknow
         if (patch.targetMs != null || patch.durationMs != null) shot.targetMs = integer(patch.targetMs ?? patch.durationMs, shot.targetMs, 500, 120_000);
         if (patch.locked != null) shot.locked = Boolean(patch.locked);
         if (patch.generated != null) shot.generated = Boolean(patch.generated);
+        if (patch.state != null || patch.matchState != null) {
+          const state = String(patch.state ?? patch.matchState).toLowerCase();
+          shot.match = { ...shot.match, state: state === 'confirmed' ? 'matched' : state === 'review' || state === 'gap' || state === 'draft' || state === 'matched' ? state : shot.match.state };
+        }
         if (['title', 'narration', 'visualIntent', 'must', 'avoid'].some((key) => key in patch)) {
           shot.match = { ...shot.match, stale: true };
         }
@@ -466,7 +470,7 @@ export function applyOperations(/** @type {Storyboard} */ doc, /** @type {unknow
       case 'setMatch': {
         if (!shot) throw new HttpError(404, 'no such shot');
         if (shot.locked) throw new HttpError(409, 'that shot is locked');
-        const candidate = shot.match.candidates.find((item) => item.id === String(op.candidateId));
+        const candidate = shot.match.candidates.find((item) => item.id === String(op.candidateId ?? op.selectedId ?? op.id));
         if (!candidate) throw new HttpError(404, 'no such candidate');
         shot.match = { ...shot.match, selectedId: candidate.id, confidence: Math.round(within(candidate.score) * 100), state: candidate.score < REVIEW_SCORE ? 'review' : 'matched' };
         break;

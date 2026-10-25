@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckSquare, FolderInput, FolderOpen, FolderSearch, Image, ImageOff, ImagePlus, ListX, MoreHorizontal, Pencil, ScrollText, Trash2, WandSparkles } from 'lucide-react';
+import { Bug, CheckSquare, FolderInput, FolderOpen, FolderSearch, Image, ImageOff, ImagePlus, ListX, MoreHorizontal, Pencil, ScrollText, Trash2, WandSparkles } from 'lucide-react';
 import { ContextMenu, type ContextMenuEntry } from './ContextMenu';
 import { Tooltip } from './Tooltip';
 import { useT } from '@/i18n';
@@ -28,6 +28,7 @@ export function ProjectMenu({
   onDelete,
   onRoughCut,
   onApiLogs,
+  onDebugExport,
   size = 18,
   className,
 }: {
@@ -55,6 +56,8 @@ export function ProjectMenu({
   onRoughCut?: () => void;
   /** Open the developer's floating API log window. */
   onApiLogs?: () => void;
+  /** Download all conversations and agent logs for a programmer. */
+  onDebugExport?: () => void;
   size?: number;
   className?: string;
 }) {
@@ -76,6 +79,7 @@ export function ProjectMenu({
   add('open', <FolderOpen size={15} />, t('projectMenu.open'), onOpen);
   /* under Open: the workflow's AI step, before cutting by hand */
   add('roughcut', <WandSparkles size={15} />, t('workflow.roughcut'), onRoughCut);
+  add('debugExport', <Bug size={15} />, '导出对话记录（调试）', onDebugExport);
   add('apiLogs', <ScrollText size={15} />, 'API 日志 · 模型调用', onApiLogs);
   add('rename', <Pencil size={15} />, t('projectMenu.rename'), onRename);
   add('select', <CheckSquare size={15} />, t('library.select'), onSelect);

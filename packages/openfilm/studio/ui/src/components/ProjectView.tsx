@@ -47,6 +47,7 @@ import { ladderStepMs, THUMB_CELL_PX, thumbAnchorTimes } from '@/lib/thumb-cache
 import { clipThumbId, overridesToken } from '@/lib/thumb-frame';
 import { useLoadedThumbs } from '@/lib/use-loaded-thumbs';
 import { droppedOverrides, overrideTarget, undoneFields, type DroppedEdits, type PersonEdit } from '@/lib/dropped-overrides';
+import { exportProjectDebug } from '@/lib/debug-export';
 import { filmFrameBox, type FilmFrameId } from '@/lib/film-frame';
 import { canvasFor, fitToCanvas } from '@/lib/canvas-fit';
 import { factsOfProbe, mediaListingOf, resourceKindOf, srcHitsAsset, warmProjectMedia, type MediaListing, type MediaProxy, type MediaResult, type MediaSources, type WorkspaceResource } from '@/lib/workspace-resources';
@@ -84,8 +85,8 @@ import { ProjectLayoutMenu } from './ProjectLayoutMenu';
 import { ProjectMenu } from './ProjectMenu';
 import { ApiLogWindow } from './ApiLogWindow';
 import { EditChatPanel } from './ai/EditChatPanel';
-import { ProjectHistoryButton, ProjectHistoryControls } from './ProjectHistoryControls';
-import { useProjectHistory } from './use-project-history';
+
+
 import { FilmFullscreenBar, useFullscreenKeys } from './FilmFullscreenBar';
 import { ViewerBar } from './ViewerBar';
 import { LiveTime, type PlaybackClock } from './LiveTime';
@@ -725,6 +726,8 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings }: {
   const [timelineOpen, setTimelineOpen] = useKeptFlag('openfilm.project.timeline');
   /* The editing stage's AI conversation; open until the person closes it, kept like the other panes. */
   const [editChatOpen, setEditChatOpen] = useKeptFlag('openfilm.project.aiChat', true);
+  const [roughcutChatOpen, setRoughcutChatOpen] = useKeptFlag('openfilm.project.roughcutChat', true);
+  const [soundChatOpen, setSoundChatOpen] = useKeptFlag('openfilm.project.soundChat', true);
   /* open whenever the project opens (a reload too); closed, it stays closed until then or until a selection opens it */
   const [inspectorOpen, setInspectorOpen] = React.useState(true);
   const closeInspector = React.useCallback(() => setInspectorOpen(false), [setInspectorOpen]);
@@ -2696,36 +2699,6 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings }: {
     setSubtitleProblem(null);
     void subs.transcribe().then((r) => { if (!r.ok) setSubtitleProblem({ text: r.error ?? '', connect: !!r.needsTranscriber }); });
   }, [subs, subtitleProblem]);
-  const headerOpsRef = React.useRef<HTMLDivElement>(null);
-  const [historyOpen, setHistoryOpen] = React.useState(false);
-  const [historyAnchor, setHistoryAnchor] = React.useState<{ x: number; y: number } | null>(null);
-  const history = useProjectHistory(projectId, {
-    onError: toast.showError,
-    onMoved: () => { film.forget(); void api.film(projectId).then((f) => { setLoaded(f); }); },
-    beforeCommit: film.settled,
-  });
-  const refreshHistory = React.useRef(history.refresh);
-  refreshHistory.current = history.refresh;
-  const historyOpenRef = React.useRef(historyOpen);
-  historyOpenRef.current = historyOpen;
-  React.useEffect(() => {
-    /* a history action, at once; the folder changing (an edit, the agent's writes) while the panel shows its uncommitted
-       changes, once the burst settles */
-    let later: ReturnType<typeof setTimeout> | null = null;
-    const stop = projectEvents(projectId, (e) => {
-      if (e.type === 'history') { void refreshHistory.current(); return; }
-      if ((e.type === 'film' || e.type === 'files') && historyOpenRef.current) {
-        if (later) clearTimeout(later);
-        later = setTimeout(() => { later = null; void refreshHistory.current(); }, 400);
-      }
-    });
-    return () => { if (later) clearTimeout(later); stop(); };
-  }, [projectId]);
-  const openHistory = () => {
-    const rect = headerOpsRef.current?.getBoundingClientRect();
-    if (rect) setHistoryAnchor({ x: rect.right, y: rect.bottom + 4 });
-    setHistoryOpen((v) => !v);
-  };
   const [apiLogsOpen, setApiLogsOpen] = React.useState(false);
   const [exportClipId, setExportClipId] = React.useState<string | null>(null);
   /* a clip's export is a visit to the deliver step with that clip in hand; leaving clears it */
@@ -2825,14 +2798,16 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings }: {
                 <WorkflowBar stage={workflowStage} onChange={goStage} />
               </div>
             )}
-            <div ref={headerOpsRef} className="pointer-events-auto flex min-w-0 items-center justify-end gap-1">
-              <ProjectLayoutMenu className={TOP_BTN}
-                /* an app that keeps the media in its own panel opens it there, from its own button: not a pane of Studio's */
-                assets={hostAssets ? null : assetsPaneOpen} onAssets={setAssetsPaneOpen}
-                layers={layersPaneOpen} onLayers={setLayersPaneOpen}
-                timeline={timelineOpen} inspector={inspectorOpen}
-                onTimeline={setTimelineOpen} onInspector={setInspectorOpen}
-                hostPanel={hostPanel ? { label: hostPanel.label, open: hostPanel.open, onChange: hostPanel.setOpen } : null} />
+            <div className="pointer-events-auto flex min-w-0 items-center justify-end gap-1">
+              {workflowStage === 'edit' ? (
+                <ProjectLayoutMenu className={TOP_BTN}
+                  /* an app that keeps the media in its own panel opens it there, from its own button: not a pane of Studio's */
+                  assets={hostAssets ? null : assetsPaneOpen} onAssets={setAssetsPaneOpen}
+                  layers={layersPaneOpen} onLayers={setLayersPaneOpen}
+                  timeline={timelineOpen} inspector={inspectorOpen}
+                  onTimeline={setTimelineOpen} onInspector={setInspectorOpen}
+                  hostPanel={hostPanel ? { label: hostPanel.label, open: hostPanel.open, onChange: hostPanel.setOpen } : null} />
+              ) : null}
               {workflowStage === 'edit' && hostPanel ? (
                 <Tooltip label="AI 对话" side="bottom">
                   <button type="button" aria-label="AI 对话" aria-pressed={hostPanel.open}
@@ -2848,20 +2823,35 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings }: {
                     <Sparkles size={16} />
                   </button>
                 </Tooltip>
+              ) : workflowStage === 'roughcut' ? (
+                <Tooltip label="AI 分镜助手" side="bottom">
+                  <button type="button" aria-label="AI 分镜助手" aria-pressed={roughcutChatOpen}
+                    onClick={() => setRoughcutChatOpen(!roughcutChatOpen)} className={`${TOP_BTN} ${roughcutChatOpen ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
+                    <Sparkles size={16} />
+                  </button>
+                </Tooltip>
+              ) : workflowStage === 'sound' ? (
+                <Tooltip label="AI 音效助手" side="bottom">
+                  <button type="button" aria-label="AI 音效助手" aria-pressed={soundChatOpen}
+                    onClick={() => setSoundChatOpen(!soundChatOpen)} className={`${TOP_BTN} ${soundChatOpen ? 'bg-[var(--bg-hover)] text-[var(--text)]' : ''}`}>
+                    <Sparkles size={16} />
+                  </button>
+                </Tooltip>
               ) : null}
-              <ProjectHistoryButton open={historyOpen} onClick={openHistory} className={TOP_BTN} />
-              <Tooltip label={t('projectMenu.export')} side="bottom">
-                <button type="button" aria-label={t('projectMenu.export')} className={TOP_BTN}
-                  onClick={() => {
-                    if (previewError) toast.showError(`${t('project.filmCannotExport')} ${previewError}`);
-                    else if (filmMs > 0) { setExportClipId(null); goStage('deliver'); }
-                    else toast.show(t('project.filmNotReady'));
-                  }}>
-                  <Upload size={16} />
-                </button>
-              </Tooltip>
+              {workflowStage !== 'deliver' ? (
+                <Tooltip label={t('projectMenu.export')} side="bottom">
+                  <button type="button" aria-label={t('projectMenu.export')} className={TOP_BTN}
+                    onClick={() => {
+                      if (previewError) toast.showError(`${t('project.filmCannotExport')} ${previewError}`);
+                      else if (filmMs > 0) { setExportClipId(null); goStage('deliver'); }
+                      else toast.show(t('project.filmNotReady'));
+                    }}>
+                    <Upload size={16} />
+                  </button>
+                </Tooltip>
+              ) : null}
               {/* in an app's tabs these are in the tab's menu */}
-              {inTabs ? null : <ProjectMenu className={TOP_BTN} onRoughCut={() => setWorkflowStage('roughcut')} onApiLogs={() => setApiLogsOpen(true)} onCoverFromFrame={coverFromFrame} onReveal={() => reveal('')} />}
+              {inTabs ? null : <ProjectMenu className={TOP_BTN} onRoughCut={() => setWorkflowStage('roughcut')} onDebugExport={() => void exportProjectDebug(loaded?.project ?? { id: projectId, name: projectId })} onApiLogs={() => setApiLogsOpen(true)} onCoverFromFrame={coverFromFrame} onReveal={() => reveal('')} />}
             </div>
             <div aria-hidden className="shrink-0 self-stretch" style={{ width: 'var(--titlebar-right-x)' }} />
           </div>
@@ -3300,7 +3290,9 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings }: {
                     toast.showError(e instanceof Error ? e.message : String(e));
                   }
                 }}
-                onEnterEdit={() => setWorkflowStage('edit')}
+                onEnterSound={() => setWorkflowStage('sound')}
+                chatOpen={roughcutChatOpen}
+                onCloseChat={() => setRoughcutChatOpen(false)}
                 onSettings={() => onSettings('agents')}
                 notify={(message) => toast.show(message)}
                 error={(message) => toast.showError(message)}
@@ -3338,9 +3330,13 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings }: {
                 onDelete={onDelete}
                 onReveal={(path) => reveal(path)}
                 onSettings={() => onSettings('providers')}
+                onAgentSettings={() => onSettings('agents')}
+                onOpenSubtitles={showSubtitleLook}
                 onEditOps={editOps}
                 onUndo={() => stepHistory('undo')}
                 onRedo={() => stepHistory('redo')}
+                chatOpen={soundChatOpen}
+                onCloseChat={() => setSoundChatOpen(false)}
                 subtitleLines={(subs.captions?.cues ?? []).map((cue) => cue.text.trim()).filter(Boolean)}
                 notify={(message) => toast.show(message)}
                 error={(message) => toast.showError(message)}
@@ -3368,7 +3364,7 @@ export function ProjectView({ projectId, onProject, onLeave, onSettings }: {
       </div>
 
       <ApiLogWindow open={apiLogsOpen} onClose={() => setApiLogsOpen(false)} />
-      <ProjectHistoryControls projectId={projectId} history={history} open={historyOpen} anchor={historyAnchor} onClose={() => setHistoryOpen(false)} />
+
       {examplesOpen ? (
         <ExamplesDialog projectId={projectId} open={examplesOpen === true ? undefined : examplesOpen} onClose={() => setExamplesOpen(false)}
           /* a film started from an example: in a tab of its own where there are tabs, else here */
